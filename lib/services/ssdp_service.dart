@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:xml/xml.dart';
@@ -25,37 +26,15 @@ class SSDPService {
   static const String broadcastAddress = '255.255.255.255';
   static const int ssdpPort = 1900;
 
+  // UPnP/DLNA search targets
   static const List<String> searchTargets = [
     'ssdp:all',
     'upnp:rootdevice',
     'urn:schemas-upnp-org:device:MediaRenderer:1',
     'urn:schemas-upnp-org:device:MediaServer:1',
     'urn:schemas-upnp-org:service:AVTransport:1',
-    'urn:schemas-upnp-org:service:ContentDirectory:1',
     'urn:schemas-upnp-org:service:RenderingControl:1',
-  ];
-
-  // Extended DLNA ports for comprehensive scanning
-  static const List<int> commonDLNAPorts = [
-    49152, 49153, 49154, 49155, 49200, // UPnP dynamic ports
-    8008, 8009, 8080, 8443, 9000, 9080, // Common HTTP ports
-    52235, 52323, 1400, 7000, 8060, // Device-specific ports
-    60000, 60001, 60002, // Additional dynamic ports
-    2869, 5000, 5001, // Windows Media ports
-  ];
-
-  // MediaRenderer-specific description paths
-  static const List<String> mediaRendererPaths = [
-    '/description.xml',
-    '/rootDesc.xml',
-    '/dmr/description.xml',
-    '/dmr.xml',
-    '/MediaRenderer/desc.xml',
-    '/upnp/desc.xml',
-    '/DeviceDescription.xml',
-    '/xml/device_description.xml',
-    '/render/DevDesc.xml',
-    '/',
+    'urn:schemas-upnp-org:service:ContentDirectory:1',
   ];
 
   RawDatagramSocket? _socket;
@@ -81,7 +60,7 @@ class SSDPService {
     final entry = SSDPLogEntry(level, message);
     _logs.add(entry);
     if (_logs.length > 200) {
-      _logs.removeAt(0); // Keep last 200 logs
+      _logs.removeAt(0);
     }
     _logController.add(entry);
     print('SSDP: $message');
@@ -91,20 +70,21 @@ class SSDPService {
     _logs.clear();
   }
 
+  /// Start SSDP device discovery
+  /// This sends M-SEARCH requests and listens for device responses
+  /// The LOCATION header in responses contains the device description URL
   Future<void> startDiscovery() async {
     await stopDiscovery();
     _discoveredLocations.clear();
-    _log('INFO', '开始设备发现...');
+    _log('INFO', '开始SSDP设备发现...');
 
     try {
-      // Get network info first
       await _getNetworkInfo();
       _log('INFO', '本地IP: $_localIp, 子网广播: $_subnetBroadcast');
 
-      // Create socket - try different binding strategies for iOS
       _socket = await _createSocket();
       if (_socket == null) {
-        _log('ERROR', '创建Socket失败');
+        _log('ERROR', '创建UDP Socket失败');
         return;
       }
 
@@ -114,8 +94,8 @@ class SSDPService {
             final datagram = _socket!.receive();
             if (datagram != null) {
               final response = String.fromCharCodes(datagram.data);
-              _log('DEBUG', '收到响应 from ${datagram.address.address}:${datagram.port}');
-              _handleResponse(response);
+              _log('DEBUG', '收到UDP响应 from ${datagram.address.address}:${datagram.port}');
+              _handleSSDPResponse(response);
             }
           }
         },
@@ -124,23 +104,23 @@ class SSDPService {
       );
 
       // Send initial search
-      await _sendAllSearchRequests();
+      await _sendSearchRequests();
 
-      // Schedule retries - more aggressive for iOS
+      // Retry periodically
       int retryCount = 0;
       _searchTimer = Timer.periodic(const Duration(seconds: 2), (timer) async {
         retryCount++;
         if (retryCount <= 5) {
-          _log('INFO', '重试搜索 $retryCount/5');
-          await _sendAllSearchRequests();
+          _log('INFO', '重试SSDP搜索 $retryCount/5');
+          await _sendSearchRequests();
         } else {
           timer.cancel();
-          _log('INFO', '搜索完成，共发现 ${_discoveredLocations.length} 个位置');
+          _log('INFO', 'SSDP搜索完成，发现 ${_discoveredLocations.length} 个设备位置');
         }
       });
 
     } catch (e) {
-      _log('ERROR', '发现过程错误: $e');
+      _log('ERROR', 'SSDP发现错误: $e');
     }
   }
 
@@ -151,20 +131,19 @@ class SSDPService {
         includeLoopback: false,
       );
 
+      // Prefer WiFi interfaces
       for (final interface in interfaces) {
         final name = interface.name.toLowerCase();
-        // Prefer WiFi interfaces (en0 on iOS, wlan on Android)
         if (name.contains('en0') || name.contains('en1') ||
             name.contains('wlan') || name.contains('wifi')) {
           for (final addr in interface.addresses) {
             if (!addr.isLoopback) {
               _localIp = addr.address;
-              // Calculate subnet broadcast (assume /24)
               final parts = _localIp!.split('.');
               if (parts.length == 4) {
                 _subnetBroadcast = '${parts[0]}.${parts[1]}.${parts[2]}.255';
               }
-              _log('INFO', '使用接口 ${interface.name}: $_localIp');
+              _log('INFO', '使用WiFi接口 ${interface.name}: $_localIp');
               return;
             }
           }
@@ -191,7 +170,7 @@ class SSDPService {
   }
 
   Future<RawDatagramSocket?> _createSocket() async {
-    // Strategy 1: Bind to local IP (best for iOS)
+    // Strategy 1: Bind to local IP
     if (_localIp != null) {
       try {
         final socket = await RawDatagramSocket.bind(
@@ -203,8 +182,6 @@ class SSDPService {
         socket.broadcastEnabled = true;
         socket.readEventsEnabled = true;
         _log('INFO', 'Socket绑定到 $_localIp:${socket.port}');
-
-        // Try to join multicast (may fail on iOS, that's OK)
         _tryJoinMulticast(socket);
         return socket;
       } catch (e) {
@@ -229,7 +206,7 @@ class SSDPService {
       _log('WARN', '绑定到anyIPv4失败: $e');
     }
 
-    // Strategy 3: Bind to specific port (for receiving responses)
+    // Strategy 3: Bind to SSDP port
     try {
       final socket = await RawDatagramSocket.bind(
         InternetAddress.anyIPv4,
@@ -252,13 +229,13 @@ class SSDPService {
   void _tryJoinMulticast(RawDatagramSocket socket) {
     try {
       socket.joinMulticast(InternetAddress(multicastAddress));
-      _log('INFO', '加入组播组 $multicastAddress');
+      _log('INFO', '已加入组播组 $multicastAddress');
     } catch (e) {
-      _log('WARN', '无法加入组播(iOS正常): $e');
+      _log('WARN', '加入组播失败(iOS正常): $e');
     }
   }
 
-  Future<void> _sendAllSearchRequests() async {
+  Future<void> _sendSearchRequests() async {
     if (_socket == null) return;
 
     final targets = [
@@ -268,8 +245,8 @@ class SSDPService {
     ];
 
     int sentCount = 0;
-    for (final target in searchTargets) {
-      final message = _buildSearchMessage(target);
+    for (final st in searchTargets) {
+      final message = _buildMSearchMessage(st);
       final data = message.codeUnits;
 
       for (final address in targets) {
@@ -280,24 +257,26 @@ class SSDPService {
           } catch (e) {
             // Ignore send errors
           }
-          await Future.delayed(const Duration(milliseconds: 50));
+          await Future.delayed(const Duration(milliseconds: 30));
         }
       }
     }
-    _log('INFO', '发送搜索请求到 ${targets.length} 个地址, 共 $sentCount 个包');
+    _log('INFO', '发送M-SEARCH到 ${targets.length} 个地址, 共 $sentCount 个包');
   }
 
-  String _buildSearchMessage(String target) {
+  String _buildMSearchMessage(String searchTarget) {
     return 'M-SEARCH * HTTP/1.1\r\n'
         'HOST: $multicastAddress:$ssdpPort\r\n'
         'MAN: "ssdp:discover"\r\n'
-        'MX: 5\r\n'
-        'ST: $target\r\n'
-        'USER-AGENT: iOS UPnP/1.0 DLNADOC/1.50\r\n'
+        'MX: 3\r\n'
+        'ST: $searchTarget\r\n'
+        'USER-AGENT: UPnP/1.0 DLNADOC/1.50\r\n'
         '\r\n';
   }
 
-  void _handleResponse(String response) async {
+  /// Handle SSDP response - extract LOCATION header and fetch device description
+  void _handleSSDPResponse(String response) async {
+    // Check if it's a valid response
     if (!response.contains('HTTP/1.1 200') &&
         !response.toUpperCase().contains('NOTIFY')) {
       return;
@@ -306,12 +285,19 @@ class SSDPService {
     final headers = _parseHeaders(response);
     final location = headers['location'];
 
-    if (location == null || location.isEmpty) return;
-    if (_discoveredLocations.contains(location)) return;
+    if (location == null || location.isEmpty) {
+      _log('WARN', 'SSDP响应缺少LOCATION头');
+      return;
+    }
+
+    if (_discoveredLocations.contains(location)) {
+      return; // Already processed
+    }
 
     _discoveredLocations.add(location);
-    _log('INFO', '发现设备: $location');
+    _log('INFO', 'SSDP发现设备URL: $location');
 
+    // Fetch device description from the LOCATION URL
     try {
       final devices = await _fetchDeviceDescription(location);
       for (final device in devices) {
@@ -340,26 +326,27 @@ class SSDPService {
     return headers;
   }
 
+  /// Fetch device description from URL
   Future<List<DLNADevice>> _fetchDeviceDescription(String location) async {
     final devices = <DLNADevice>[];
 
     try {
-      // Use HttpClient for better iOS compatibility
       final client = HttpClient();
-      client.connectionTimeout = const Duration(seconds: 3);
+      client.connectionTimeout = const Duration(seconds: 5);
 
       final uri = Uri.parse(location);
       final request = await client.getUrl(uri);
-      request.headers.set('User-Agent', 'iOS UPnP/1.0 DLNADOC/1.50');
+      request.headers.set('User-Agent', 'UPnP/1.0 DLNADOC/1.50');
 
-      final response = await request.close().timeout(const Duration(seconds: 5));
+      final response = await request.close().timeout(const Duration(seconds: 8));
 
       if (response.statusCode != 200) {
+        _log('WARN', 'HTTP ${response.statusCode} from $location');
         client.close();
         return devices;
       }
 
-      final body = await response.transform(const SystemEncoding().decoder).join();
+      final body = await response.transform(utf8.decoder).join();
       client.close();
 
       final document = XmlDocument.parse(body);
@@ -369,6 +356,7 @@ class SSDPService {
       final rootDevice = deviceElements.first;
       final baseUrl = _getBaseUrl(location);
 
+      // Parse root device and embedded devices
       final allDevices = [rootDevice, ...rootDevice.findAllElements('device')];
 
       for (final device in allDevices) {
@@ -377,6 +365,8 @@ class SSDPService {
           devices.add(parsed);
         }
       }
+
+      _log('INFO', '从 $location 解析到 ${devices.length} 个设备');
     } catch (e) {
       _log('ERROR', '解析设备描述失败: $e');
     }
@@ -384,74 +374,101 @@ class SSDPService {
     return devices;
   }
 
-  /// Manual device discovery by IP address
-  /// Tries common DLNA ports to find device description
-  Future<List<DLNADevice>> discoverDeviceByIP(String ip) async {
-    _log('INFO', '手动发现设备: $ip');
-    final devices = <DLNADevice>[];
+  /// Discover device by direct URL (user provides complete description.xml URL)
+  Future<List<DLNADevice>> discoverDeviceByURL(String url) async {
+    _log('INFO', '手动发现设备URL: $url');
 
-    // Try each port with all paths
-    for (final port in commonDLNAPorts) {
-      for (final path in mediaRendererPaths) {
-        final location = 'http://$ip:$port$path';
+    if (_discoveredLocations.contains(url)) {
+      _log('WARN', '设备已存在: $url');
+      return [];
+    }
+
+    try {
+      final devices = await _fetchDeviceDescription(url);
+
+      for (final device in devices) {
+        if (device.canPlayMedia || device.canBrowseMedia) {
+          if (!_discoveredLocations.contains(url)) {
+            _discoveredLocations.add(url);
+            _deviceController.add(device);
+            _log('INFO', '手动添加设备成功: ${device.friendlyName}');
+          }
+        }
+      }
+
+      if (devices.isEmpty) {
+        _log('WARN', '未能从URL解析到有效设备');
+      }
+
+      return devices;
+    } catch (e) {
+      _log('ERROR', '手动发现失败: $e');
+      return [];
+    }
+  }
+
+  /// Probe device by IP - send unicast M-SEARCH to device's SSDP port
+  /// This triggers the device to respond with its LOCATION
+  Future<void> probeDeviceByIP(String ip) async {
+    _log('INFO', '探测设备IP: $ip');
+
+    try {
+      // Create a temporary socket for probing
+      final socket = await RawDatagramSocket.bind(
+        InternetAddress.anyIPv4,
+        0,
+        reuseAddress: true,
+      );
+      socket.broadcastEnabled = true;
+      socket.readEventsEnabled = true;
+
+      final completer = Completer<void>();
+      Timer? timeoutTimer;
+
+      socket.listen((event) {
+        if (event == RawSocketEvent.read) {
+          final datagram = socket.receive();
+          if (datagram != null) {
+            final response = String.fromCharCodes(datagram.data);
+            _log('DEBUG', '探测响应 from ${datagram.address.address}');
+            _handleSSDPResponse(response);
+          }
+        }
+      });
+
+      // Send unicast M-SEARCH to the specific IP
+      for (final st in searchTargets) {
+        final message = _buildMSearchMessage(st);
         try {
-          _log('DEBUG', '尝试: $location');
-          final foundDevices = await _fetchDeviceDescription(location);
-          if (foundDevices.isNotEmpty) {
-            _log('INFO', '手动发现成功: $location');
-            for (final device in foundDevices) {
-              // Accept both MediaRenderer and MediaServer
-              if (device.canPlayMedia || device.canBrowseMedia) {
-                if (!_discoveredLocations.contains(location)) {
-                  _discoveredLocations.add(location);
-                  devices.add(device);
-                  _deviceController.add(device);
-                }
-              }
-            }
-            if (devices.isNotEmpty) {
-              return devices;
-            }
-          }
+          socket.send(message.codeUnits, InternetAddress(ip), ssdpPort);
+          _log('DEBUG', '发送M-SEARCH到 $ip:$ssdpPort (ST: $st)');
         } catch (e) {
-          // Continue trying other ports/paths
+          _log('ERROR', '发送到 $ip 失败: $e');
         }
+        await Future.delayed(const Duration(milliseconds: 100));
       }
-    }
 
-    // Try direct port 80
-    for (final path in mediaRendererPaths) {
-      final location = 'http://$ip$path';
-      try {
-        _log('DEBUG', '尝试: $location');
-        final foundDevices = await _fetchDeviceDescription(location);
-        if (foundDevices.isNotEmpty) {
-          _log('INFO', '手动发现成功: $location');
-          for (final device in foundDevices) {
-            if (device.canPlayMedia || device.canBrowseMedia) {
-              if (!_discoveredLocations.contains(location)) {
-                _discoveredLocations.add(location);
-                devices.add(device);
-                _deviceController.add(device);
-              }
-            }
-          }
-          if (devices.isNotEmpty) {
-            return devices;
-          }
+      // Wait for responses
+      timeoutTimer = Timer(const Duration(seconds: 5), () {
+        if (!completer.isCompleted) {
+          completer.complete();
         }
-      } catch (e) {
-        // Continue trying
-      }
-    }
+      });
 
-    _log('WARN', '手动发现失败: 在 $ip 未找到DLNA设备');
-    return devices;
+      await completer.future;
+      timeoutTimer.cancel();
+      socket.close();
+
+      _log('INFO', '探测 $ip 完成');
+    } catch (e) {
+      _log('ERROR', '探测设备失败: $e');
+    }
   }
 
   DLNADevice? _parseDevice(XmlElement device, String location, String baseUrl) {
     final deviceType = device.findElements('deviceType').firstOrNull?.innerText ?? '';
 
+    // Accept MediaRenderer and MediaServer devices
     if (!deviceType.contains('MediaRenderer') &&
         !deviceType.contains('MediaServer')) {
       return null;
@@ -477,6 +494,7 @@ class SSDPService {
       }
     }
 
+    // Need at least one usable service
     if (avTransportUrl == null && contentDirectoryUrl == null) {
       return null;
     }

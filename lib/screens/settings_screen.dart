@@ -224,32 +224,48 @@ class _SettingsScreenState extends State<SettingsScreen> {
               _buildSectionHeader(context, '手动添加设备'),
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: Row(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Expanded(
-                      child: TextField(
-                        controller: _ipController,
-                        decoration: const InputDecoration(
-                          hintText: '输入设备IP地址',
-                          border: OutlineInputBorder(),
-                          contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                        ),
-                        keyboardType: TextInputType.number,
+                    TextField(
+                      controller: _ipController,
+                      decoration: const InputDecoration(
+                        hintText: '输入设备描述URL',
+                        helperText: '例如: http://192.168.31.159:49152/description.xml',
+                        border: OutlineInputBorder(),
+                        contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                       ),
+                      keyboardType: TextInputType.url,
                     ),
-                    const SizedBox(width: 8),
-                    ElevatedButton(
-                      onPressed: provider.isManualDiscovering
-                          ? null
-                          : () => _manualDiscoverDevice(provider),
-                      child: provider.isManualDiscovering
-                          ? const SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Text('添加'),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: ElevatedButton.icon(
+                            onPressed: provider.isManualDiscovering
+                                ? null
+                                : () => _manualDiscoverByURL(provider),
+                            icon: const Icon(Icons.add_link),
+                            label: const Text('通过URL添加'),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: provider.isManualDiscovering
+                                ? null
+                                : () => _probeDeviceByIP(provider),
+                            icon: const Icon(Icons.search),
+                            label: const Text('探测IP'),
+                          ),
+                        ),
+                      ],
                     ),
+                    if (provider.isManualDiscovering)
+                      const Padding(
+                        padding: EdgeInsets.only(top: 8),
+                        child: LinearProgressIndicator(),
+                      ),
                   ],
                 ),
               ),
@@ -257,7 +273,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
               const Padding(
                 padding: EdgeInsets.symmetric(horizontal: 16),
                 child: Text(
-                  '提示: 如果自动扫描找不到设备，可以手动输入设备IP地址',
+                  '通过URL添加: 直接输入设备的description.xml完整URL\n'
+                  '探测IP: 输入设备IP地址，发送SSDP请求获取设备信息',
                   style: TextStyle(fontSize: 12, color: Colors.grey),
                 ),
               ),
@@ -385,7 +402,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ListTile(
                 leading: const Icon(Icons.info_outline),
                 title: const Text('版本'),
-                subtitle: const Text('1.0.5'),
+                subtitle: const Text('1.0.6'),
               ),
               ListTile(
                 leading: const Icon(Icons.phone_iphone),
@@ -453,25 +470,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  Future<void> _manualDiscoverDevice(CastProvider provider) async {
-    final ip = _ipController.text.trim();
-    if (ip.isEmpty) {
+  Future<void> _manualDiscoverByURL(CastProvider provider) async {
+    final input = _ipController.text.trim();
+    if (input.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('请输入IP地址')),
+        const SnackBar(content: Text('请输入URL')),
       );
       return;
     }
 
-    // Simple IP validation
-    final parts = ip.split('.');
-    if (parts.length != 4 || parts.any((p) => int.tryParse(p) == null)) {
+    // Check if it's a URL
+    if (!input.startsWith('http://') && !input.startsWith('https://')) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('IP地址格式不正确')),
+        const SnackBar(content: Text('请输入完整URL (以http://开头)')),
       );
       return;
     }
 
-    final success = await provider.discoverDeviceByIP(ip);
+    final success = await provider.discoverDeviceByURL(input);
 
     if (mounted) {
       if (success) {
@@ -484,12 +500,53 @@ class _SettingsScreenState extends State<SettingsScreen> {
         );
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('未找到DLNA设备，请检查IP地址'),
+          SnackBar(
+            content: Text(provider.error ?? '未找到有效设备'),
             backgroundColor: Colors.red,
           ),
         );
       }
+    }
+  }
+
+  Future<void> _probeDeviceByIP(CastProvider provider) async {
+    final input = _ipController.text.trim();
+    if (input.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('请输入IP地址')),
+      );
+      return;
+    }
+
+    // Extract IP from URL if user entered a URL
+    String ip = input;
+    if (input.startsWith('http')) {
+      try {
+        final uri = Uri.parse(input);
+        ip = uri.host;
+      } catch (e) {
+        // Keep original input
+      }
+    }
+
+    // Simple IP validation
+    final parts = ip.split('.');
+    if (parts.length != 4 || parts.any((p) => int.tryParse(p) == null)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('IP地址格式不正确')),
+      );
+      return;
+    }
+
+    await provider.probeDeviceByIP(ip);
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('探测完成，请查看日志'),
+          duration: Duration(seconds: 2),
+        ),
+      );
     }
   }
 

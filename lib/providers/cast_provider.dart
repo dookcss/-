@@ -119,8 +119,9 @@ class CastProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Manual device discovery by IP address
-  Future<bool> discoverDeviceByIP(String ip) async {
+  /// Manual device discovery by URL
+  /// User provides complete description.xml URL
+  Future<bool> discoverDeviceByURL(String url) async {
     if (_isManualDiscovering) return false;
 
     _isManualDiscovering = true;
@@ -128,13 +129,12 @@ class CastProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final devices = await _ssdpService.discoverDeviceByIP(ip);
+      final devices = await _ssdpService.discoverDeviceByURL(url);
 
       for (final device in devices) {
         if (!_devices.any((d) => d.usn == device.usn)) {
           _devices.add(device);
 
-          // Auto-select first renderer if enabled
           if (_autoSelectRenderer && _selectedRenderer == null && device.canPlayMedia) {
             _selectedRenderer = device;
           }
@@ -150,6 +150,24 @@ class CastProvider extends ChangeNotifier {
       notifyListeners();
       return false;
     }
+  }
+
+  /// Probe device by IP - send M-SEARCH to device's SSDP port
+  Future<void> probeDeviceByIP(String ip) async {
+    if (_isManualDiscovering) return;
+
+    _isManualDiscovering = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      await _ssdpService.probeDeviceByIP(ip);
+    } catch (e) {
+      _error = '探测失败: $e';
+    }
+
+    _isManualDiscovering = false;
+    notifyListeners();
   }
 
   void selectRenderer(DLNADevice? device) {
