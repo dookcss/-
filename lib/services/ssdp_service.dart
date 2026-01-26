@@ -5,6 +5,8 @@ import 'dart:io';
 import 'package:xml/xml.dart';
 import '../models/dlna_device.dart';
 
+// iOS网络诊断工具
+
 class SSDPLogEntry {
   final DateTime timestamp;
   final String level; // INFO, WARN, ERROR, DEBUG
@@ -170,6 +172,13 @@ class SSDPService {
   }
 
   Future<RawDatagramSocket?> _createSocket() async {
+    // iOS专用策略：必须使用anyIPv4，不能绑定到特定IP
+    // iOS对绑定特定IP后发送组播有严格限制
+    if (Platform.isIOS) {
+      return await _createIOSSocket();
+    }
+
+    // Android/其他平台策略
     // Strategy 1: Bind to local IP
     if (_localIp != null) {
       try {
@@ -226,6 +235,29 @@ class SSDPService {
     return null;
   }
 
+  /// iOS专用Socket创建 - 使用更宽松的配置
+  Future<RawDatagramSocket?> _createIOSSocket() async {
+    _log('INFO', 'iOS: 使用专用Socket策略');
+    
+    // iOS上使用anyIPv4，不加入组播组（iOS组播需要特殊权限）
+    try {
+      final socket = await RawDatagramSocket.bind(
+        InternetAddress.anyIPv4,
+        0,
+        reuseAddress: true,
+      );
+      socket.broadcastEnabled = true;
+      socket.readEventsEnabled = true;
+      _log('INFO', 'iOS: Socket创建成功，端口 ${socket.port}');
+      // iOS上不尝试加入组播，避免触发权限问题
+      return socket;
+    } catch (e) {
+      _log('ERROR', 'iOS: Socket创建失败: $e');
+    }
+    
+    return null;
+  }
+
   void _tryJoinMulticast(RawDatagramSocket socket) {
     try {
       socket.joinMulticast(InternetAddress(multicastAddress));
@@ -238,13 +270,25 @@ class SSDPService {
   Future<void> _sendSearchRequests() async {
     if (_socket == null) return;
 
-    final targets = [
-      InternetAddress(multicastAddress),
-      InternetAddress(broadcastAddress),
-      if (_subnetBroadcast != null) InternetAddress(_subnetBroadcast!),
-    ];
+    // iOS上跳过组播地址239.255.255.250，它会导致"No route to host"错误
+    // 只使用广播地址和子网广播
+    final List<InternetAddress> targets;
+    if (Platform.isIOS) {
+      targets = [
+        InternetAddress(broadcastAddress), // 255.255.255.255
+        if (_subnetBroadcast != null) InternetAddress(_subnetBroadcast!),
+      ];
+      _log('INFO', 'iOS: 跳过组播，只使用广播地址');
+    } else {
+      targets = [
+        InternetAddress(multicastAddress),
+        InternetAddress(broadcastAddress),
+        if (_subnetBroadcast != null) InternetAddress(_subnetBroadcast!),
+      ];
+    }
 
     int sentCount = 0;
+    int errorCount = 0;
     for (final st in searchTargets) {
       final message = _buildMSearchMessage(st);
       final data = message.codeUnits;
@@ -255,14 +299,19 @@ class SSDPService {
             _socket!.send(data, address, ssdpPort);
             sentCount++;
           } catch (e) {
-            // Ignore send errors
+            errorCount++;
+            if (errorCount <= 3) {
+              _log('WARN', '发送失败到 ${address.address}: $e');
+            }
           }
           await Future.delayed(const Duration(milliseconds: 30));
         }
       }
     }
-    _log('INFO', '发送M-SEARCH到 ${targets.length} 个地址, 共 $sentCount 个包');
+    _log('INFO', '发送M-SEARCH到 ${targets.length} 个地址, 共 $sentCount 个包' + 
+        (errorCount > 0 ? ', $errorCount 个失败' : ''));
   }
+
 
   String _buildMSearchMessage(String searchTarget) {
     return 'M-SEARCH * HTTP/1.1\r\n'
@@ -332,13 +381,30 @@ class SSDPService {
 
     try {
       final client = HttpClient();
-      client.connectionTimeout = const Duration(seconds: 5);
+      // iOS需要更短的超时，避免长时间阻塞
+      client.connectionTimeout = Duration(seconds: Platform.isIOS ? 3 : 5);
+      // iOS上禁用证书验证（本地网络设备通常没有有效证书）
+      client.badCertificateCallback = (cert, host, port) => true;
 
       final uri = Uri.parse(location);
-      final request = await client.getUrl(uri);
+      _log('DEBUG', '正在连接: ${uri.host}:${uri.port}');
+      
+      final request = await client.getUrl(uri).timeout(
+        Duration(seconds: Platform.isIOS ? 5 : 8),
+        onTimeout: () {
+          throw TimeoutException('连接超时: $location');
+        },
+      );
       request.headers.set('User-Agent', 'UPnP/1.0 DLNADOC/1.50');
+      request.headers.set('Accept', '*/*');
+      request.headers.set('Connection', 'close');
 
-      final response = await request.close().timeout(const Duration(seconds: 8));
+      final response = await request.close().timeout(
+        Duration(seconds: Platform.isIOS ? 5 : 8),
+        onTimeout: () {
+          throw TimeoutException('响应超时: $location');
+        },
+      );
 
       if (response.statusCode != 200) {
         _log('WARN', 'HTTP ${response.statusCode} from $location');
@@ -367,6 +433,13 @@ class SSDPService {
       }
 
       _log('INFO', '从 $location 解析到 ${devices.length} 个设备');
+    } on TimeoutException catch (e) {
+      _log('ERROR', '请求超时: $e');
+    } on SocketException catch (e) {
+      _log('ERROR', '网络连接失败: ${e.message} (${e.osError?.errorCode})');
+      if (Platform.isIOS) {
+        _log('WARN', 'iOS提示: 请确认已授予本地网络访问权限');
+      }
     } catch (e) {
       _log('ERROR', '解析设备描述失败: $e');
     }
@@ -463,6 +536,77 @@ class SSDPService {
     } catch (e) {
       _log('ERROR', '探测设备失败: $e');
     }
+    
+    // iOS专用: 如果UDP探测失败，尝试直接HTTP访问常见端口
+    if (Platform.isIOS) {
+      await _probeDeviceByHTTP(ip);
+    }
+  }
+
+  /// iOS专用: 通过HTTP直接探测设备
+  /// 当SSDP无法工作时，直接尝试访问常见的DLNA描述文件端口
+  Future<void> _probeDeviceByHTTP(String ip) async {
+    _log('INFO', 'iOS: 尝试HTTP直接探测 $ip');
+    
+    // 常见的DLNA/UPnP端口
+    const ports = [49152, 49153, 49154, 8060, 1400, 7000, 8008, 8443, 52323];
+    // 常见的描述文件路径
+    const paths = [
+      '/description.xml',
+      '/rootDesc.xml', 
+      '/DeviceDescription.xml',
+      '/upnp/description.xml',
+      '/dmr/description.xml',
+    ];
+    
+    for (final port in ports) {
+      for (final path in paths) {
+        final url = 'http://$ip:$port$path';
+        try {
+          final client = HttpClient();
+          client.connectionTimeout = const Duration(seconds: 2);
+          client.badCertificateCallback = (cert, host, port) => true;
+          
+          final uri = Uri.parse(url);
+          final request = await client.getUrl(uri).timeout(
+            const Duration(seconds: 2),
+            onTimeout: () => throw TimeoutException('超时'),
+          );
+          
+          final response = await request.close().timeout(
+            const Duration(seconds: 2),
+            onTimeout: () => throw TimeoutException('响应超时'),
+          );
+          
+          if (response.statusCode == 200) {
+            final body = await response.transform(utf8.decoder).join();
+            client.close();
+            
+            // 检查是否是有效的UPnP设备描述
+            if (body.contains('<device>') || body.contains('<root')) {
+              _log('INFO', 'iOS: 在 $url 发现设备!');
+              
+              // 添加到已发现列表并处理
+              if (!_discoveredLocations.contains(url)) {
+                _discoveredLocations.add(url);
+                final devices = await _fetchDeviceDescription(url);
+                for (final device in devices) {
+                  if (device.canPlayMedia || device.canBrowseMedia) {
+                    _log('INFO', 'iOS: 添加设备 ${device.friendlyName}');
+                    _deviceController.add(device);
+                  }
+                }
+              }
+              return; // 找到设备后返回
+            }
+          }
+          client.close();
+        } catch (e) {
+          // 忽略连接错误，继续尝试下一个端口/路径
+        }
+      }
+    }
+    _log('INFO', 'iOS: HTTP探测 $ip 完成，未发现设备');
   }
 
   DLNADevice? _parseDevice(XmlElement device, String location, String baseUrl) {
