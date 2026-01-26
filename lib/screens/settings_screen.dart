@@ -33,6 +33,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     super.initState();
     _loadNetworkInfo();
     _initLogSubscription();
+    // 加载保存的IP地址
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      context.read<CastProvider>().loadSavedIPs();
+    });
   }
 
   void _initLogSubscription() {
@@ -399,6 +403,94 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
               const Divider(),
 
+              // Saved IPs Section
+              _buildSectionHeader(context, '已保存的设备IP'),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: ElevatedButton.icon(
+                            onPressed: provider.isManualDiscovering
+                                ? null
+                                : () => _saveAndProbeIP(provider),
+                            icon: const Icon(Icons.add),
+                            label: const Text('保存并探测IP'),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        OutlinedButton.icon(
+                          onPressed: provider.isManualDiscovering
+                              ? null
+                              : () => provider.probeSavedIPs(),
+                          icon: const Icon(Icons.refresh),
+                          label: const Text('探测全部'),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    if (provider.savedIPs.isEmpty)
+                      Container(
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: Colors.grey.withValues(alpha: 0.1),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: const Center(
+                          child: Text(
+                            '暂无保存的IP\n输入IP后点击"保存并探测IP"',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(color: Colors.grey),
+                          ),
+                        ),
+                      )
+                    else
+                      ...provider.savedIPs.map((ip) => Card(
+                        margin: const EdgeInsets.only(bottom: 4),
+                        child: ListTile(
+                          leading: const Icon(Icons.computer),
+                          title: Text(
+                            ip,
+                            style: const TextStyle(fontFamily: 'monospace'),
+                          ),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                icon: const Icon(Icons.search, size: 20),
+                                tooltip: '探测此IP',
+                                onPressed: () => provider.probeDeviceByIP(ip),
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.delete_outline, size: 20),
+                                tooltip: '删除',
+                                onPressed: () async {
+                                  await provider.removeSavedIP(ip);
+                                  if (mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(content: Text('已删除 $ip')),
+                                    );
+                                  }
+                                },
+                              ),
+                            ],
+                          ),
+                        ),
+                      )),
+                    const SizedBox(height: 4),
+                    const Text(
+                      'iOS上SSDP自动发现可能不可用，保存IP后每次扫描会自动探测这些地址',
+                      style: TextStyle(fontSize: 11, color: Colors.grey),
+                    ),
+                  ],
+                ),
+              ),
+              const Divider(),
+
+
               // Device Settings Section
               _buildSectionHeader(context, '设备设置'),
               SwitchListTile(
@@ -713,6 +805,61 @@ class _SettingsScreenState extends State<SettingsScreen> {
       );
     }
   }
+
+  Future<void> _saveAndProbeIP(CastProvider provider) async {
+    final input = _ipController.text.trim();
+    if (input.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('请输入IP地址')),
+      );
+      return;
+    }
+
+    // Extract IP from URL if user entered a URL
+    String ip = input;
+    if (input.startsWith('http')) {
+      try {
+        final uri = Uri.parse(input);
+        ip = uri.host;
+      } catch (e) {
+        // Keep original input
+      }
+    }
+
+    // Simple IP validation
+    final parts = ip.split('.');
+    if (parts.length != 4 || parts.any((p) => int.tryParse(p) == null)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('IP地址格式不正确')),
+      );
+      return;
+    }
+
+    // 保存IP到持久化存储
+    final saved = await provider.addSavedIP(ip);
+    if (!saved) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('保存IP失败')),
+        );
+      }
+      return;
+    }
+
+    // 探测设备
+    await provider.probeDeviceByIP(ip);
+
+    if (mounted) {
+      _ipController.clear();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('已保存并探测 $ip'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    }
+  }
+
 
   Widget _buildSectionHeader(BuildContext context, String title) {
     return Padding(
