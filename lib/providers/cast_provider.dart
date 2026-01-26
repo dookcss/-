@@ -160,15 +160,37 @@ class CastProvider extends ChangeNotifier {
     _error = null;
     notifyListeners();
 
+    // 订阅设备流以捕获发现的设备
+    StreamSubscription<DLNADevice>? subscription;
+    subscription = _ssdpService.deviceStream.listen((device) {
+      // Avoid duplicates by USN
+      if (!_devices.any((d) => d.usn == device.usn)) {
+        _devices.add(device);
+
+        // Auto-select first renderer if enabled
+        if (_autoSelectRenderer && _selectedRenderer == null && device.canPlayMedia) {
+          _selectedRenderer = device;
+        }
+
+        notifyListeners();
+      }
+    });
+
     try {
       await _ssdpService.probeDeviceByIP(ip);
+      // 等待一小段时间让异步设备添加完成
+      await Future.delayed(const Duration(milliseconds: 500));
     } catch (e) {
       _error = '探测失败: $e';
     }
 
+    // 取消订阅
+    await subscription.cancel();
+
     _isManualDiscovering = false;
     notifyListeners();
   }
+
 
   void selectRenderer(DLNADevice? device) {
     _selectedRenderer = device;
