@@ -5,6 +5,22 @@ import 'package:xml/xml.dart';
 import 'package:http/http.dart' as http;
 import '../models/dlna_device.dart';
 
+class SSDPLogEntry {
+  final DateTime timestamp;
+  final String level; // INFO, WARN, ERROR, DEBUG
+  final String message;
+
+  SSDPLogEntry(this.level, this.message) : timestamp = DateTime.now();
+
+  @override
+  String toString() {
+    final time = '${timestamp.hour.toString().padLeft(2, '0')}:'
+        '${timestamp.minute.toString().padLeft(2, '0')}:'
+        '${timestamp.second.toString().padLeft(2, '0')}';
+    return '[$time] $level: $message';
+  }
+}
+
 class SSDPService {
   static const String multicastAddress = '239.255.255.250';
   static const String broadcastAddress = '255.255.255.255';
@@ -19,6 +35,11 @@ class SSDPService {
     'urn:schemas-upnp-org:service:ContentDirectory:1',
   ];
 
+  // Common DLNA ports for manual discovery
+  static const List<int> commonDLNAPorts = [
+    8008, 8080, 8443, 9000, 49152, 49153, 49154, 52235, 1400, 7000,
+  ];
+
   RawDatagramSocket? _socket;
   final StreamController<DLNADevice> _deviceController =
       StreamController<DLNADevice>.broadcast();
@@ -30,19 +51,42 @@ class SSDPService {
   String? _localIp;
   String? _subnetBroadcast;
 
+  // Debug logging
+  final List<SSDPLogEntry> _logs = [];
+  final StreamController<SSDPLogEntry> _logController =
+      StreamController<SSDPLogEntry>.broadcast();
+
+  List<SSDPLogEntry> get logs => List.unmodifiable(_logs);
+  Stream<SSDPLogEntry> get logStream => _logController.stream;
+
+  void _log(String level, String message) {
+    final entry = SSDPLogEntry(level, message);
+    _logs.add(entry);
+    if (_logs.length > 200) {
+      _logs.removeAt(0); // Keep last 200 logs
+    }
+    _logController.add(entry);
+    print('SSDP: $message');
+  }
+
+  void clearLogs() {
+    _logs.clear();
+  }
+
   Future<void> startDiscovery() async {
     await stopDiscovery();
     _discoveredLocations.clear();
+    _log('INFO', '开始设备发现...');
 
     try {
       // Get network info first
       await _getNetworkInfo();
-      print('SSDP: Local IP: $_localIp, Subnet Broadcast: $_subnetBroadcast');
+      _log('INFO', '本地IP: $_localIp, 子网广播: $_subnetBroadcast');
 
       // Create socket - try different binding strategies for iOS
       _socket = await _createSocket();
       if (_socket == null) {
-        print('SSDP: Failed to create socket');
+        _log('ERROR', '创建Socket失败');
         return;
       }
 
@@ -52,12 +96,13 @@ class SSDPService {
             final datagram = _socket!.receive();
             if (datagram != null) {
               final response = String.fromCharCodes(datagram.data);
+              _log('DEBUG', '收到响应 from ${datagram.address.address}:${datagram.port}');
               _handleResponse(response);
             }
           }
         },
-        onError: (error) => print('SSDP: Socket error: $error'),
-        onDone: () => print('SSDP: Socket closed'),
+        onError: (error) => _log('ERROR', 'Socket错误: $error'),
+        onDone: () => _log('INFO', 'Socket关闭'),
       );
 
       // Send initial search
@@ -68,15 +113,16 @@ class SSDPService {
       _searchTimer = Timer.periodic(const Duration(seconds: 2), (timer) async {
         retryCount++;
         if (retryCount <= 5) {
-          print('SSDP: Retry $retryCount/5');
+          _log('INFO', '重试搜索 $retryCount/5');
           await _sendAllSearchRequests();
         } else {
           timer.cancel();
+          _log('INFO', '搜索完成，共发现 ${_discoveredLocations.length} 个位置');
         }
       });
 
     } catch (e) {
-      print('SSDP: Discovery error: $e');
+      _log('ERROR', '发现过程错误: $e');
     }
   }
 
@@ -100,7 +146,7 @@ class SSDPService {
               if (parts.length == 4) {
                 _subnetBroadcast = '${parts[0]}.${parts[1]}.${parts[2]}.255';
               }
-              print('SSDP: Using interface ${interface.name}: $_localIp');
+              _log('INFO', '使用接口 ${interface.name}: $_localIp');
               return;
             }
           }
@@ -116,12 +162,13 @@ class SSDPService {
             if (parts.length == 4) {
               _subnetBroadcast = '${parts[0]}.${parts[1]}.${parts[2]}.255';
             }
+            _log('INFO', '使用备用接口 ${interface.name}: $_localIp');
             return;
           }
         }
       }
     } catch (e) {
-      print('SSDP: Failed to get network info: $e');
+      _log('ERROR', '获取网络信息失败: $e');
     }
   }
 
@@ -137,13 +184,13 @@ class SSDPService {
         );
         socket.broadcastEnabled = true;
         socket.readEventsEnabled = true;
-        print('SSDP: Socket bound to $_localIp');
+        _log('INFO', 'Socket绑定到 $_localIp:${socket.port}');
 
         // Try to join multicast (may fail on iOS, that's OK)
         _tryJoinMulticast(socket);
         return socket;
       } catch (e) {
-        print('SSDP: Failed to bind to local IP: $e');
+        _log('WARN', '绑定到本地IP失败: $e');
       }
     }
 
@@ -157,11 +204,11 @@ class SSDPService {
       );
       socket.broadcastEnabled = true;
       socket.readEventsEnabled = true;
-      print('SSDP: Socket bound to anyIPv4');
+      _log('INFO', 'Socket绑定到 anyIPv4:${socket.port}');
       _tryJoinMulticast(socket);
       return socket;
     } catch (e) {
-      print('SSDP: Failed to bind to anyIPv4: $e');
+      _log('WARN', '绑定到anyIPv4失败: $e');
     }
 
     // Strategy 3: Bind to specific port (for receiving responses)
@@ -174,11 +221,11 @@ class SSDPService {
       );
       socket.broadcastEnabled = true;
       socket.readEventsEnabled = true;
-      print('SSDP: Socket bound to port $ssdpPort');
+      _log('INFO', 'Socket绑定到 SSDP端口 $ssdpPort');
       _tryJoinMulticast(socket);
       return socket;
     } catch (e) {
-      print('SSDP: Failed to bind to SSDP port: $e');
+      _log('ERROR', '绑定到SSDP端口失败: $e');
     }
 
     return null;
@@ -187,9 +234,9 @@ class SSDPService {
   void _tryJoinMulticast(RawDatagramSocket socket) {
     try {
       socket.joinMulticast(InternetAddress(multicastAddress));
-      print('SSDP: Joined multicast group');
+      _log('INFO', '加入组播组 $multicastAddress');
     } catch (e) {
-      print('SSDP: Could not join multicast (expected on iOS): $e');
+      _log('WARN', '无法加入组播(iOS正常): $e');
     }
   }
 
@@ -202,6 +249,7 @@ class SSDPService {
       if (_subnetBroadcast != null) InternetAddress(_subnetBroadcast!),
     ];
 
+    int sentCount = 0;
     for (final target in searchTargets) {
       final message = _buildSearchMessage(target);
       final data = message.codeUnits;
@@ -210,6 +258,7 @@ class SSDPService {
         for (var i = 0; i < 2; i++) {
           try {
             _socket!.send(data, address, ssdpPort);
+            sentCount++;
           } catch (e) {
             // Ignore send errors
           }
@@ -217,7 +266,7 @@ class SSDPService {
         }
       }
     }
-    print('SSDP: Sent search requests to ${targets.length} addresses');
+    _log('INFO', '发送搜索请求到 ${targets.length} 个地址, 共 $sentCount 个包');
   }
 
   String _buildSearchMessage(String target) {
@@ -243,18 +292,18 @@ class SSDPService {
     if (_discoveredLocations.contains(location)) return;
 
     _discoveredLocations.add(location);
-    print('SSDP: Found device at: $location');
+    _log('INFO', '发现设备: $location');
 
     try {
       final devices = await _fetchDeviceDescription(location);
       for (final device in devices) {
         if (device.canPlayMedia || device.canBrowseMedia) {
-          print('SSDP: Added ${device.friendlyName} (${device.typeLabel})');
+          _log('INFO', '添加设备: ${device.friendlyName} (${device.typeLabel})');
           _deviceController.add(device);
         }
       }
     } catch (e) {
-      print('SSDP: Failed to fetch device: $e');
+      _log('ERROR', '获取设备描述失败: $e');
     }
   }
 
@@ -300,9 +349,83 @@ class SSDPService {
         }
       }
     } catch (e) {
-      print('SSDP: Error parsing device: $e');
+      _log('ERROR', '解析设备描述失败: $e');
     }
 
+    return devices;
+  }
+
+  /// Manual device discovery by IP address
+  /// Tries common DLNA ports to find device description
+  Future<List<DLNADevice>> discoverDeviceByIP(String ip) async {
+    _log('INFO', '手动发现设备: $ip');
+    final devices = <DLNADevice>[];
+
+    // Try common description paths
+    final paths = [
+      '/description.xml',
+      '/rootDesc.xml',
+      '/DeviceDescription.xml',
+      '/upnp/desc.xml',
+      '/dmr.xml',
+      '/dms.xml',
+      '/',
+    ];
+
+    for (final port in commonDLNAPorts) {
+      for (final path in paths) {
+        final location = 'http://$ip:$port$path';
+        try {
+          _log('DEBUG', '尝试: $location');
+          final foundDevices = await _fetchDeviceDescription(location);
+          if (foundDevices.isNotEmpty) {
+            _log('INFO', '手动发现成功: $location');
+            for (final device in foundDevices) {
+              if (device.canPlayMedia || device.canBrowseMedia) {
+                if (!_discoveredLocations.contains(location)) {
+                  _discoveredLocations.add(location);
+                  devices.add(device);
+                  _deviceController.add(device);
+                }
+              }
+            }
+            if (devices.isNotEmpty) {
+              return devices;
+            }
+          }
+        } catch (e) {
+          // Continue trying other ports/paths
+        }
+      }
+    }
+
+    // Try direct port 80
+    for (final path in paths) {
+      final location = 'http://$ip$path';
+      try {
+        _log('DEBUG', '尝试: $location');
+        final foundDevices = await _fetchDeviceDescription(location);
+        if (foundDevices.isNotEmpty) {
+          _log('INFO', '手动发现成功: $location');
+          for (final device in foundDevices) {
+            if (device.canPlayMedia || device.canBrowseMedia) {
+              if (!_discoveredLocations.contains(location)) {
+                _discoveredLocations.add(location);
+                devices.add(device);
+                _deviceController.add(device);
+              }
+            }
+          }
+          if (devices.isNotEmpty) {
+            return devices;
+          }
+        }
+      } catch (e) {
+        // Continue trying
+      }
+    }
+
+    _log('WARN', '手动发现失败: 在 $ip 未找到DLNA设备');
     return devices;
   }
 
@@ -391,5 +514,6 @@ class SSDPService {
   void dispose() {
     stopDiscovery();
     _deviceController.close();
+    _logController.close();
   }
 }

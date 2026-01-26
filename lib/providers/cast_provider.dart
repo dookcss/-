@@ -37,6 +37,9 @@ class CastProvider extends ChangeNotifier {
   String _currentTitle = '根目录';
   bool _isBrowsing = false;
 
+  // Manual discovery state
+  bool _isManualDiscovering = false;
+
   StreamSubscription? _deviceSubscription;
   Timer? _positionTimer;
 
@@ -58,12 +61,22 @@ class CastProvider extends ChangeNotifier {
   int get volume => _volume;
   bool get isPlaying => _playbackState == PlaybackState.playing;
   bool get autoSelectRenderer => _autoSelectRenderer;
+  bool get isManualDiscovering => _isManualDiscovering;
 
   // Content browsing getters
   List<DIDLContent> get currentContents => List.unmodifiable(_currentContents);
   String get currentTitle => _currentTitle;
   bool get isBrowsing => _isBrowsing;
   bool get canGoBack => _navigationStack.length > 1;
+
+  // SSDP log getters
+  List<SSDPLogEntry> get ssdpLogs => _ssdpService.logs;
+  Stream<SSDPLogEntry> get ssdpLogStream => _ssdpService.logStream;
+
+  void clearSsdpLogs() {
+    _ssdpService.clearLogs();
+    notifyListeners();
+  }
 
   void setAutoSelectRenderer(bool value) {
     _autoSelectRenderer = value;
@@ -104,6 +117,39 @@ class CastProvider extends ChangeNotifier {
     _deviceSubscription?.cancel();
     _ssdpService.stopDiscovery();
     notifyListeners();
+  }
+
+  /// Manual device discovery by IP address
+  Future<bool> discoverDeviceByIP(String ip) async {
+    if (_isManualDiscovering) return false;
+
+    _isManualDiscovering = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      final devices = await _ssdpService.discoverDeviceByIP(ip);
+
+      for (final device in devices) {
+        if (!_devices.any((d) => d.usn == device.usn)) {
+          _devices.add(device);
+
+          // Auto-select first renderer if enabled
+          if (_autoSelectRenderer && _selectedRenderer == null && device.canPlayMedia) {
+            _selectedRenderer = device;
+          }
+        }
+      }
+
+      _isManualDiscovering = false;
+      notifyListeners();
+      return devices.isNotEmpty;
+    } catch (e) {
+      _error = '手动发现失败: $e';
+      _isManualDiscovering = false;
+      notifyListeners();
+      return false;
+    }
   }
 
   void selectRenderer(DLNADevice? device) {

@@ -1,8 +1,10 @@
 import 'dart:io';
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:network_info_plus/network_info_plus.dart';
 import '../providers/cast_provider.dart';
+import '../services/ssdp_service.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -18,11 +20,37 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String? _wifiIP;
   List<NetworkInterfaceInfo> _interfaces = [];
   bool _isLoading = true;
+  final TextEditingController _ipController = TextEditingController();
+  StreamSubscription<SSDPLogEntry>? _logSubscription;
+  final List<SSDPLogEntry> _displayLogs = [];
 
   @override
   void initState() {
     super.initState();
     _loadNetworkInfo();
+    _initLogSubscription();
+  }
+
+  void _initLogSubscription() {
+    final provider = context.read<CastProvider>();
+    _displayLogs.addAll(provider.ssdpLogs);
+    _logSubscription = provider.ssdpLogStream.listen((log) {
+      if (mounted) {
+        setState(() {
+          _displayLogs.add(log);
+          if (_displayLogs.length > 100) {
+            _displayLogs.removeAt(0);
+          }
+        });
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _logSubscription?.cancel();
+    _ipController.dispose();
+    super.dispose();
   }
 
   Future<void> _loadNetworkInfo() async {
@@ -191,6 +219,49 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ],
               const Divider(),
 
+              // Manual Device Discovery Section
+              _buildSectionHeader(context, '手动添加设备'),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _ipController,
+                        decoration: const InputDecoration(
+                          hintText: '输入设备IP地址',
+                          border: OutlineInputBorder(),
+                          contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        ),
+                        keyboardType: TextInputType.number,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    ElevatedButton(
+                      onPressed: provider.isManualDiscovering
+                          ? null
+                          : () => _manualDiscoverDevice(provider),
+                      child: provider.isManualDiscovering
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Text('添加'),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 8),
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 16),
+                child: Text(
+                  '提示: 如果自动扫描找不到设备，可以手动输入设备IP地址',
+                  style: TextStyle(fontSize: 12, color: Colors.grey),
+                ),
+              ),
+              const Divider(),
+
               // Device Settings Section
               _buildSectionHeader(context, '设备设置'),
               SwitchListTile(
@@ -239,12 +310,69 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
               const Divider(),
 
+              // SSDP Debug Log Section
+              _buildSectionHeader(context, 'SSDP调试日志'),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      '${_displayLogs.length} 条日志',
+                      style: const TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
+                    TextButton.icon(
+                      icon: const Icon(Icons.delete_outline, size: 18),
+                      label: const Text('清空'),
+                      onPressed: () {
+                        provider.clearSsdpLogs();
+                        setState(() {
+                          _displayLogs.clear();
+                        });
+                      },
+                    ),
+                  ],
+                ),
+              ),
+              Container(
+                margin: const EdgeInsets.symmetric(horizontal: 16),
+                height: 200,
+                decoration: BoxDecoration(
+                  color: Colors.black87,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: _displayLogs.isEmpty
+                    ? const Center(
+                        child: Text(
+                          '暂无日志\n点击"重新扫描设备"开始',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: Colors.grey),
+                        ),
+                      )
+                    : ListView.builder(
+                        padding: const EdgeInsets.all(8),
+                        itemCount: _displayLogs.length,
+                        itemBuilder: (context, index) {
+                          final log = _displayLogs[_displayLogs.length - 1 - index];
+                          return Text(
+                            log.toString(),
+                            style: TextStyle(
+                              fontFamily: 'monospace',
+                              fontSize: 11,
+                              color: _getLogColor(log.level),
+                            ),
+                          );
+                        },
+                      ),
+              ),
+              const Divider(),
+
               // About Section
               _buildSectionHeader(context, '关于'),
               ListTile(
                 leading: const Icon(Icons.info_outline),
                 title: const Text('版本'),
-                subtitle: const Text('1.0.3'),
+                subtitle: const Text('1.0.4'),
               ),
               ListTile(
                 leading: const Icon(Icons.phone_iphone),
@@ -284,6 +412,61 @@ class _SettingsScreenState extends State<SettingsScreen> {
       return '${parts[0]}.${parts[1]}.${parts[2]}.255';
     }
     return '?';
+  }
+
+  Color _getLogColor(String level) {
+    switch (level) {
+      case 'ERROR':
+        return Colors.red;
+      case 'WARN':
+        return Colors.orange;
+      case 'INFO':
+        return Colors.green;
+      case 'DEBUG':
+        return Colors.grey;
+      default:
+        return Colors.white;
+    }
+  }
+
+  Future<void> _manualDiscoverDevice(CastProvider provider) async {
+    final ip = _ipController.text.trim();
+    if (ip.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('请输入IP地址')),
+      );
+      return;
+    }
+
+    // Simple IP validation
+    final parts = ip.split('.');
+    if (parts.length != 4 || parts.any((p) => int.tryParse(p) == null)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('IP地址格式不正确')),
+      );
+      return;
+    }
+
+    final success = await provider.discoverDeviceByIP(ip);
+
+    if (mounted) {
+      if (success) {
+        _ipController.clear();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('设备添加成功'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('未找到DLNA设备，请检查IP地址'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
   }
 
   Widget _buildSectionHeader(BuildContext context, String title) {
