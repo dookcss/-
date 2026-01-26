@@ -2,13 +2,27 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- 组播权限 - TrollStore可以让这个生效 -->
 	<key>com.apple.developer.networking.multicast</key>
 	<true/>
+	<!-- 网络客户端权限 -->
 	<key>com.apple.security.network.client</key>
 	<true/>
+	<!-- 网络服务端权限 -->
 	<key>com.apple.security.network.server</key>
 	<true/>
+	<!-- WiFi信息访问权限 -->
 	<key>com.apple.developer.networking.wifi-info</key>
+	<true/>
+	<!-- 允许获取任务信息（调试用） -->
+	<key>get-task-allow</key>
+	<true/>
+	<!-- 沙盒网络权限 -->
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<!-- 允许任意网络连接 -->
+	<key>com.apple.private.security.no-sandbox</key>
 	<true/>
 </dict>
 </plist>
+

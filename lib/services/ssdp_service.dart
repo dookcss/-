@@ -548,7 +548,7 @@ class SSDPService {
   Future<void> _probeDeviceByHTTP(String ip) async {
     _log('INFO', 'iOS: 尝试HTTP直接探测 $ip');
     
-    // 常见的DLNA/UPnP端口
+    // 常见的DLNA/UPnP端口 - 49152是您设备使用的端口，放在最前面
     const ports = [49152, 49153, 49154, 8060, 1400, 7000, 8008, 8443, 52323];
     // 常见的描述文件路径
     const paths = [
@@ -559,28 +559,67 @@ class SSDPService {
       '/dmr/description.xml',
     ];
     
+    int attemptCount = 0;
+    int errorCount = 0;
+    
     for (final port in ports) {
       for (final path in paths) {
+        attemptCount++;
         final url = 'http://$ip:$port$path';
+        
+        // 对于已知的端口49152，增加详细日志
+        final isKnownPort = port == 49152 && path == '/description.xml';
+        if (isKnownPort) {
+          _log('DEBUG', 'iOS: 测试已知URL: $url');
+        }
+        
         try {
           final client = HttpClient();
-          client.connectionTimeout = const Duration(seconds: 2);
+          client.connectionTimeout = const Duration(seconds: 3);
           client.badCertificateCallback = (cert, host, port) => true;
           
           final uri = Uri.parse(url);
+          
+          if (isKnownPort) {
+            _log('DEBUG', 'iOS: 正在连接 $url ...');
+          }
+          
           final request = await client.getUrl(uri).timeout(
-            const Duration(seconds: 2),
-            onTimeout: () => throw TimeoutException('超时'),
+            const Duration(seconds: 3),
+            onTimeout: () {
+              if (isKnownPort) {
+                _log('WARN', 'iOS: getUrl超时 $url');
+              }
+              throw TimeoutException('getUrl超时');
+            },
           );
           
+          request.headers.set('User-Agent', 'UPnP/1.0');
+          request.headers.set('Connection', 'close');
+          
+          if (isKnownPort) {
+            _log('DEBUG', 'iOS: 等待响应 $url ...');
+          }
+          
           final response = await request.close().timeout(
-            const Duration(seconds: 2),
-            onTimeout: () => throw TimeoutException('响应超时'),
+            const Duration(seconds: 3),
+            onTimeout: () {
+              if (isKnownPort) {
+                _log('WARN', 'iOS: 响应超时 $url');
+              }
+              throw TimeoutException('响应超时');
+            },
           );
+          
+          if (isKnownPort) {
+            _log('DEBUG', 'iOS: 收到响应 HTTP ${response.statusCode}');
+          }
           
           if (response.statusCode == 200) {
             final body = await response.transform(utf8.decoder).join();
             client.close();
+            
+            _log('INFO', 'iOS: HTTP 200 from $url (${body.length} bytes)');
             
             // 检查是否是有效的UPnP设备描述
             if (body.contains('<device>') || body.contains('<root')) {
@@ -599,15 +638,39 @@ class SSDPService {
               }
               return; // 找到设备后返回
             }
+          } else {
+            if (isKnownPort) {
+              _log('WARN', 'iOS: HTTP ${response.statusCode} from $url');
+            }
           }
           client.close();
+        } on SocketException catch (e) {
+          errorCount++;
+          // 对于已知端口或前几个错误，输出详细日志
+          if (isKnownPort || errorCount <= 3) {
+            _log('ERROR', 'iOS: SocketException $url: ${e.message} (errno=${e.osError?.errorCode})');
+          }
+        } on TimeoutException catch (e) {
+          errorCount++;
+          if (isKnownPort) {
+            _log('WARN', 'iOS: Timeout $url: $e');
+          }
         } catch (e) {
-          // 忽略连接错误，继续尝试下一个端口/路径
+          errorCount++;
+          if (isKnownPort || errorCount <= 3) {
+            _log('ERROR', 'iOS: Exception $url: $e');
+          }
         }
       }
+      
+      // 每个端口测试完后，如果是已知端口且全部失败，给出提示
+      if (ports.indexOf(port) == 0 && errorCount > 0) {
+        _log('WARN', 'iOS: 端口$port全部路径测试失败，可能是网络权限问题');
+      }
     }
-    _log('INFO', 'iOS: HTTP探测 $ip 完成，未发现设备');
+    _log('INFO', 'iOS: HTTP探测 $ip 完成，尝试 $attemptCount 个URL，$errorCount 个失败');
   }
+
 
   DLNADevice? _parseDevice(XmlElement device, String location, String baseUrl) {
     final deviceType = device.findElements('deviceType').firstOrNull?.innerText ?? '';
