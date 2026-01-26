@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:xml/xml.dart';
-import 'package:http/http.dart' as http;
 import '../models/dlna_device.dart';
 
 class SSDPLogEntry {
@@ -33,11 +32,30 @@ class SSDPService {
     'urn:schemas-upnp-org:device:MediaServer:1',
     'urn:schemas-upnp-org:service:AVTransport:1',
     'urn:schemas-upnp-org:service:ContentDirectory:1',
+    'urn:schemas-upnp-org:service:RenderingControl:1',
   ];
 
-  // Common DLNA ports for manual discovery
+  // Extended DLNA ports for comprehensive scanning
   static const List<int> commonDLNAPorts = [
-    8008, 8080, 8443, 9000, 49152, 49153, 49154, 52235, 1400, 7000,
+    49152, 49153, 49154, 49155, 49200, // UPnP dynamic ports
+    8008, 8009, 8080, 8443, 9000, 9080, // Common HTTP ports
+    52235, 52323, 1400, 7000, 8060, // Device-specific ports
+    60000, 60001, 60002, // Additional dynamic ports
+    2869, 5000, 5001, // Windows Media ports
+  ];
+
+  // MediaRenderer-specific description paths
+  static const List<String> mediaRendererPaths = [
+    '/description.xml',
+    '/rootDesc.xml',
+    '/dmr/description.xml',
+    '/dmr.xml',
+    '/MediaRenderer/desc.xml',
+    '/upnp/desc.xml',
+    '/DeviceDescription.xml',
+    '/xml/device_description.xml',
+    '/render/DevDesc.xml',
+    '/',
   ];
 
   RawDatagramSocket? _socket;
@@ -326,14 +344,25 @@ class SSDPService {
     final devices = <DLNADevice>[];
 
     try {
-      final response = await http.get(
-        Uri.parse(location),
-        headers: {'User-Agent': 'iOS UPnP/1.0 DLNADOC/1.50'},
-      ).timeout(const Duration(seconds: 10));
+      // Use HttpClient for better iOS compatibility
+      final client = HttpClient();
+      client.connectionTimeout = const Duration(seconds: 3);
 
-      if (response.statusCode != 200) return devices;
+      final uri = Uri.parse(location);
+      final request = await client.getUrl(uri);
+      request.headers.set('User-Agent', 'iOS UPnP/1.0 DLNADOC/1.50');
 
-      final document = XmlDocument.parse(response.body);
+      final response = await request.close().timeout(const Duration(seconds: 5));
+
+      if (response.statusCode != 200) {
+        client.close();
+        return devices;
+      }
+
+      final body = await response.transform(const SystemEncoding().decoder).join();
+      client.close();
+
+      final document = XmlDocument.parse(body);
       final deviceElements = document.findAllElements('device');
       if (deviceElements.isEmpty) return devices;
 
@@ -361,19 +390,9 @@ class SSDPService {
     _log('INFO', '手动发现设备: $ip');
     final devices = <DLNADevice>[];
 
-    // Try common description paths
-    final paths = [
-      '/description.xml',
-      '/rootDesc.xml',
-      '/DeviceDescription.xml',
-      '/upnp/desc.xml',
-      '/dmr.xml',
-      '/dms.xml',
-      '/',
-    ];
-
+    // Try each port with all paths
     for (final port in commonDLNAPorts) {
-      for (final path in paths) {
+      for (final path in mediaRendererPaths) {
         final location = 'http://$ip:$port$path';
         try {
           _log('DEBUG', '尝试: $location');
@@ -381,6 +400,7 @@ class SSDPService {
           if (foundDevices.isNotEmpty) {
             _log('INFO', '手动发现成功: $location');
             for (final device in foundDevices) {
+              // Accept both MediaRenderer and MediaServer
               if (device.canPlayMedia || device.canBrowseMedia) {
                 if (!_discoveredLocations.contains(location)) {
                   _discoveredLocations.add(location);
@@ -400,7 +420,7 @@ class SSDPService {
     }
 
     // Try direct port 80
-    for (final path in paths) {
+    for (final path in mediaRendererPaths) {
       final location = 'http://$ip$path';
       try {
         _log('DEBUG', '尝试: $location');

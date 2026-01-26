@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:network_info_plus/network_info_plus.dart';
 import '../providers/cast_provider.dart';
@@ -321,15 +322,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       '${_displayLogs.length} 条日志',
                       style: const TextStyle(fontSize: 12, color: Colors.grey),
                     ),
-                    TextButton.icon(
-                      icon: const Icon(Icons.delete_outline, size: 18),
-                      label: const Text('清空'),
-                      onPressed: () {
-                        provider.clearSsdpLogs();
-                        setState(() {
-                          _displayLogs.clear();
-                        });
-                      },
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        TextButton.icon(
+                          icon: const Icon(Icons.copy, size: 18),
+                          label: const Text('复制'),
+                          onPressed: _displayLogs.isEmpty
+                              ? null
+                              : () => _copyLogsToClipboard(),
+                        ),
+                        TextButton.icon(
+                          icon: const Icon(Icons.delete_outline, size: 18),
+                          label: const Text('清空'),
+                          onPressed: () {
+                            provider.clearSsdpLogs();
+                            setState(() {
+                              _displayLogs.clear();
+                            });
+                          },
+                        ),
+                      ],
                     ),
                   ],
                 ),
@@ -372,7 +385,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ListTile(
                 leading: const Icon(Icons.info_outline),
                 title: const Text('版本'),
-                subtitle: const Text('1.0.4'),
+                subtitle: const Text('1.0.5'),
               ),
               ListTile(
                 leading: const Icon(Icons.phone_iphone),
@@ -427,6 +440,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
       default:
         return Colors.white;
     }
+  }
+
+  void _copyLogsToClipboard() {
+    final logText = _displayLogs.map((log) => log.toString()).join('\n');
+    Clipboard.setData(ClipboardData(text: logText));
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('日志已复制到剪贴板'),
+        duration: Duration(seconds: 2),
+      ),
+    );
   }
 
   Future<void> _manualDiscoverDevice(CastProvider provider) async {
