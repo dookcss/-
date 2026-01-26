@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>DLNA Cast</string>
+	<string>局域网投屏</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -46,19 +46,22 @@
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>DLNA Cast needs local network access to discover and control smart TVs and streaming devices on your network.</string>
+	<string>局域网投屏需要访问本地网络来发现和控制智能电视及流媒体设备。</string>
 	<key>NSBonjourServices</key>
 	<array>
-		<string>_upnp._tcp</string>
-		<string>_ssdp._udp</string>
-		<string>_dlna._tcp</string>
+		<string>_upnp._tcp.</string>
+		<string>_ssdp._udp.</string>
+		<string>_dlna._tcp.</string>
+		<string>_http._tcp.</string>
+		<string>_mediarenderer._tcp.</string>
+		<string>_mediaserver._tcp.</string>
 	</array>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>DLNA Cast needs access to your photo library to cast videos, photos and music to your TV.</string>
+	<string>局域网投屏需要访问您的相册来投放视频、照片和音乐到电视。</string>
 	<key>NSAppleMusicUsageDescription</key>
-	<string>DLNA Cast needs access to your music library to cast audio files to your TV.</string>
+	<string>局域网投屏需要访问您的音乐库来投放音频文件到电视。</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
-	<string>DLNA Cast may save media to your photo library.</string>
+	<string>局域网投屏可能需要保存媒体到您的相册。</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>
@@ -70,6 +73,7 @@
 	<array>
 		<string>audio</string>
 		<string>fetch</string>
+		<string>processing</string>
 	</array>
 </dict>
 </plist>
