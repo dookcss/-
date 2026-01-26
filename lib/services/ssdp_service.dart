@@ -9,11 +9,12 @@ class SSDPService {
   static const String ssdpAddress = '239.255.255.250';
   static const int ssdpPort = 1900;
 
-  // Search for all UPnP devices, then filter by capabilities
   static const List<String> searchTargets = [
     'ssdp:all',
     'urn:schemas-upnp-org:device:MediaRenderer:1',
+    'urn:schemas-upnp-org:device:MediaServer:1',
     'urn:schemas-upnp-org:service:AVTransport:1',
+    'urn:schemas-upnp-org:service:ContentDirectory:1',
     'upnp:rootdevice',
   ];
 
@@ -75,7 +76,7 @@ ST: $target\r
 
       for (var i = 0; i < 2; i++) {
         _socket?.send(data, address, ssdpPort);
-        await Future.delayed(const Duration(milliseconds: 300));
+        await Future.delayed(const Duration(milliseconds: 200));
       }
     }
   }
@@ -95,10 +96,11 @@ ST: $target\r
     _discoveredLocations.add(location);
 
     try {
-      final device = await _fetchDeviceDescription(location);
-      // Only add devices that can play media (have AVTransport service)
-      if (device != null && device.canPlayMedia) {
-        _deviceController.add(device);
+      final devices = await _fetchDeviceDescriptions(location);
+      for (final device in devices) {
+        if (device.canPlayMedia || device.canBrowseMedia) {
+          _deviceController.add(device);
+        }
       }
     } catch (e) {
       print('Failed to fetch device description: $e');
@@ -120,77 +122,111 @@ ST: $target\r
     return headers;
   }
 
-  Future<DLNADevice?> _fetchDeviceDescription(String location) async {
+  Future<List<DLNADevice>> _fetchDeviceDescriptions(String location) async {
+    final devices = <DLNADevice>[];
+
     try {
       final response = await http.get(Uri.parse(location)).timeout(
             const Duration(seconds: 5),
           );
 
-      if (response.statusCode != 200) return null;
+      if (response.statusCode != 200) return devices;
 
       final document = XmlDocument.parse(response.body);
       final rootDevice = document.findAllElements('device').first;
+      final baseUrl = _getBaseUrl(location);
 
       // Check main device and embedded devices
       final allDevices = [rootDevice, ...rootDevice.findAllElements('device')];
 
       for (final device in allDevices) {
-        final deviceType =
-            device.findElements('deviceType').firstOrNull?.innerText ?? '';
-
-        String? avTransportUrl;
-        String? renderingControlUrl;
-
-        final baseUrl = _getBaseUrl(location);
-
-        // Check services in this device
-        final serviceList = device.findElements('serviceList').firstOrNull;
-        if (serviceList != null) {
-          for (final service in serviceList.findElements('service')) {
-            final serviceType =
-                service.findElements('serviceType').firstOrNull?.innerText ??
-                    '';
-            final controlUrl =
-                service.findElements('controlURL').firstOrNull?.innerText ?? '';
-
-            if (serviceType.contains('AVTransport')) {
-              avTransportUrl = _resolveUrl(baseUrl, controlUrl);
-            } else if (serviceType.contains('RenderingControl')) {
-              renderingControlUrl = _resolveUrl(baseUrl, controlUrl);
-            }
-          }
-        }
-
-        // If this device has AVTransport, it's a renderer we can use
-        if (avTransportUrl != null) {
-          final friendlyName =
-              device.findElements('friendlyName').firstOrNull?.innerText ??
-                  'Unknown Device';
-          final manufacturer =
-              device.findElements('manufacturer').firstOrNull?.innerText;
-          final modelName =
-              device.findElements('modelName').firstOrNull?.innerText;
-          final udn =
-              device.findElements('UDN').firstOrNull?.innerText ?? location;
-
-          return DLNADevice(
-            usn: udn,
-            friendlyName: friendlyName,
-            location: location,
-            deviceType: deviceType,
-            manufacturer: manufacturer,
-            modelName: modelName,
-            avTransportUrl: avTransportUrl,
-            renderingControlUrl: renderingControlUrl,
-          );
+        final parsedDevice = _parseDevice(device, location, baseUrl);
+        if (parsedDevice != null) {
+          devices.add(parsedDevice);
         }
       }
-
-      return null;
     } catch (e) {
       print('Error parsing device description: $e');
+    }
+
+    return devices;
+  }
+
+  DLNADevice? _parseDevice(XmlElement device, String location, String baseUrl) {
+    final deviceType =
+        device.findElements('deviceType').firstOrNull?.innerText ?? '';
+
+    // Only process MediaRenderer and MediaServer devices
+    if (!deviceType.contains('MediaRenderer') &&
+        !deviceType.contains('MediaServer')) {
       return null;
     }
+
+    String? avTransportUrl;
+    String? renderingControlUrl;
+    String? contentDirectoryUrl;
+
+    // Parse services
+    final serviceList = device.findElements('serviceList').firstOrNull;
+    if (serviceList != null) {
+      for (final service in serviceList.findElements('service')) {
+        final serviceType =
+            service.findElements('serviceType').firstOrNull?.innerText ?? '';
+        final controlUrl =
+            service.findElements('controlURL').firstOrNull?.innerText ?? '';
+
+        if (serviceType.contains('AVTransport')) {
+          avTransportUrl = _resolveUrl(baseUrl, controlUrl);
+        } else if (serviceType.contains('RenderingControl')) {
+          renderingControlUrl = _resolveUrl(baseUrl, controlUrl);
+        } else if (serviceType.contains('ContentDirectory')) {
+          contentDirectoryUrl = _resolveUrl(baseUrl, controlUrl);
+        }
+      }
+    }
+
+    // Must have at least one useful service
+    if (avTransportUrl == null && contentDirectoryUrl == null) {
+      return null;
+    }
+
+    final friendlyName =
+        device.findElements('friendlyName').firstOrNull?.innerText ??
+            'Unknown Device';
+    final manufacturer =
+        device.findElements('manufacturer').firstOrNull?.innerText;
+    final modelName =
+        device.findElements('modelName').firstOrNull?.innerText;
+    final udn = device.findElements('UDN').firstOrNull?.innerText ?? location;
+
+    // Parse DLNA version from X_DLNADOC element
+    String? dlnaVersion;
+    String? dlnaCapabilities;
+
+    // Try different ways to find DLNA doc (handles namespaces)
+    final dlnaDocElements = device.findAllElements('X_DLNADOC');
+    if (dlnaDocElements.isNotEmpty) {
+      dlnaVersion = dlnaDocElements.first.innerText;
+    }
+
+    final dlnaCapElements = device.findAllElements('X_DLNACAP');
+    if (dlnaCapElements.isNotEmpty) {
+      dlnaCapabilities = dlnaCapElements.first.innerText;
+    }
+
+    return DLNADevice(
+      usn: udn,
+      friendlyName: friendlyName,
+      location: location,
+      deviceType: deviceType,
+      manufacturer: manufacturer,
+      modelName: modelName,
+      dlnaVersion: dlnaVersion,
+      dlnaCapabilities: dlnaCapabilities,
+      avTransportUrl: avTransportUrl,
+      renderingControlUrl: renderingControlUrl,
+      contentDirectoryUrl: contentDirectoryUrl,
+    );
   }
 
   String _getBaseUrl(String location) {

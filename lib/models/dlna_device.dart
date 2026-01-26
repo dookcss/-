@@ -1,3 +1,5 @@
+enum DLNADeviceType { renderer, server, unknown }
+
 class DLNADevice {
   final String usn;
   final String friendlyName;
@@ -5,8 +7,11 @@ class DLNADevice {
   final String deviceType;
   final String? manufacturer;
   final String? modelName;
+  final String? dlnaVersion;
+  final String? dlnaCapabilities;
   final String? avTransportUrl;
   final String? renderingControlUrl;
+  final String? contentDirectoryUrl;
 
   DLNADevice({
     required this.usn,
@@ -15,11 +20,39 @@ class DLNADevice {
     required this.deviceType,
     this.manufacturer,
     this.modelName,
+    this.dlnaVersion,
+    this.dlnaCapabilities,
     this.avTransportUrl,
     this.renderingControlUrl,
+    this.contentDirectoryUrl,
   });
 
   bool get canPlayMedia => avTransportUrl != null;
+  bool get canBrowseMedia => contentDirectoryUrl != null;
+
+  DLNADeviceType get type {
+    if (deviceType.contains('MediaRenderer')) return DLNADeviceType.renderer;
+    if (deviceType.contains('MediaServer')) return DLNADeviceType.server;
+    return DLNADeviceType.unknown;
+  }
+
+  String get typeLabel {
+    switch (type) {
+      case DLNADeviceType.renderer:
+        return 'DMR';
+      case DLNADeviceType.server:
+        return 'DMS';
+      case DLNADeviceType.unknown:
+        return 'Unknown';
+    }
+  }
+
+  String get versionDisplay {
+    if (dlnaVersion != null && dlnaVersion!.isNotEmpty) {
+      return dlnaVersion!;
+    }
+    return typeLabel;
+  }
 
   @override
   bool operator ==(Object other) =>

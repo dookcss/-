@@ -10,16 +10,20 @@ class DeviceListWidget extends StatelessWidget {
   Widget build(BuildContext context) {
     return Consumer<CastProvider>(
       builder: (context, provider, child) {
+        final renderers = provider.renderers;
+        final servers = provider.servers;
+
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // Header with scan button
             Padding(
               padding: const EdgeInsets.all(16.0),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Text(
-                    'Available Devices',
+                    'Devices',
                     style: Theme.of(context).textTheme.titleLarge,
                   ),
                   ElevatedButton.icon(
@@ -36,6 +40,7 @@ class DeviceListWidget extends StatelessWidget {
                 ],
               ),
             ),
+
             if (provider.devices.isEmpty && !provider.isScanning)
               const Padding(
                 padding: EdgeInsets.all(32.0),
@@ -52,6 +57,7 @@ class DeviceListWidget extends StatelessWidget {
                       Text(
                         'Make sure your TV/device is on the same network',
                         style: TextStyle(color: Colors.grey, fontSize: 12),
+                        textAlign: TextAlign.center,
                       ),
                     ],
                   ),
@@ -59,23 +65,55 @@ class DeviceListWidget extends StatelessWidget {
               )
             else
               Expanded(
-                child: ListView.builder(
-                  itemCount: provider.devices.length,
-                  itemBuilder: (context, index) {
-                    final device = provider.devices[index];
-                    final isSelected = provider.selectedDevice == device;
+                child: ListView(
+                  children: [
+                    // Renderers section (for playback)
+                    if (renderers.isNotEmpty) ...[
+                      _buildSectionHeader(context, 'Renderers (DMR)', Icons.tv),
+                      ...renderers.map((device) => _DeviceListTile(
+                            device: device,
+                            isSelected: provider.selectedRenderer == device,
+                            onTap: () => provider.selectRenderer(device),
+                            showType: true,
+                          )),
+                    ],
 
-                    return _DeviceListTile(
-                      device: device,
-                      isSelected: isSelected,
-                      onTap: () => provider.selectDevice(device),
-                    );
-                  },
+                    // Servers section (for browsing)
+                    if (servers.isNotEmpty) ...[
+                      _buildSectionHeader(context, 'Media Servers (DMS)', Icons.storage),
+                      ...servers.map((device) => _DeviceListTile(
+                            device: device,
+                            isSelected: provider.selectedServer == device,
+                            onTap: () => provider.selectServer(device),
+                            showType: true,
+                          )),
+                    ],
+                  ],
                 ),
               ),
           ],
         );
       },
+    );
+  }
+
+  Widget _buildSectionHeader(BuildContext context, String title, IconData icon) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+      child: Row(
+        children: [
+          Icon(icon, size: 20, color: Theme.of(context).colorScheme.primary),
+          const SizedBox(width: 8),
+          Text(
+            title,
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.bold,
+              color: Theme.of(context).colorScheme.primary,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -84,23 +122,51 @@ class _DeviceListTile extends StatelessWidget {
   final DLNADevice device;
   final bool isSelected;
   final VoidCallback onTap;
+  final bool showType;
 
   const _DeviceListTile({
     required this.device,
     required this.isSelected,
     required this.onTap,
+    this.showType = false,
   });
 
   @override
   Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      color: isSelected ? Theme.of(context).primaryColor.withValues(alpha: 0.1) : null,
+      color: isSelected ? colorScheme.primaryContainer : null,
       child: ListTile(
-        leading: Icon(
-          Icons.tv,
-          color: isSelected ? Theme.of(context).primaryColor : null,
-          size: 32,
+        leading: Stack(
+          children: [
+            Icon(
+              device.type == DLNADeviceType.renderer ? Icons.tv : Icons.storage,
+              color: isSelected ? colorScheme.primary : null,
+              size: 32,
+            ),
+            if (device.dlnaVersion != null)
+              Positioned(
+                right: 0,
+                bottom: 0,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                  decoration: BoxDecoration(
+                    color: colorScheme.secondary,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(
+                    device.versionDisplay,
+                    style: TextStyle(
+                      fontSize: 8,
+                      color: colorScheme.onSecondary,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ),
+          ],
         ),
         title: Text(
           device.friendlyName,
@@ -115,12 +181,41 @@ class _DeviceListTile extends StatelessWidget {
               Text(device.manufacturer!, style: const TextStyle(fontSize: 12)),
             if (device.modelName != null)
               Text(device.modelName!, style: const TextStyle(fontSize: 12)),
+            if (showType)
+              Row(
+                children: [
+                  _buildCapabilityChip(context, device.typeLabel, colorScheme.tertiary),
+                  if (device.canPlayMedia) ...[
+                    const SizedBox(width: 4),
+                    _buildCapabilityChip(context, 'Play', Colors.green),
+                  ],
+                  if (device.canBrowseMedia) ...[
+                    const SizedBox(width: 4),
+                    _buildCapabilityChip(context, 'Browse', Colors.blue),
+                  ],
+                ],
+              ),
           ],
         ),
         trailing: isSelected
-            ? const Icon(Icons.check_circle, color: Colors.green)
+            ? Icon(Icons.check_circle, color: colorScheme.primary)
             : const Icon(Icons.chevron_right),
         onTap: onTap,
+      ),
+    );
+  }
+
+  Widget _buildCapabilityChip(BuildContext context, String label, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.2),
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: color.withValues(alpha: 0.5)),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(fontSize: 10, color: color, fontWeight: FontWeight.w500),
       ),
     );
   }

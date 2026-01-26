@@ -3,9 +3,11 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import '../models/dlna_device.dart';
 import '../models/media_item.dart';
+import '../models/didl_content.dart';
 import '../services/ssdp_service.dart';
 import '../services/dlna_service.dart';
 import '../services/media_server.dart';
+import '../services/content_directory_service.dart';
 
 enum PlaybackState { idle, loading, playing, paused, stopped }
 
@@ -13,9 +15,11 @@ class CastProvider extends ChangeNotifier {
   final SSDPService _ssdpService = SSDPService();
   final DLNAService _dlnaService = DLNAService();
   final MediaServer _mediaServer = MediaServer();
+  final ContentDirectoryService _contentDirectoryService = ContentDirectoryService();
 
   final List<DLNADevice> _devices = [];
-  DLNADevice? _selectedDevice;
+  DLNADevice? _selectedRenderer;
+  DLNADevice? _selectedServer;
   MediaItem? _currentMedia;
   PlaybackState _playbackState = PlaybackState.idle;
   bool _isScanning = false;
@@ -24,11 +28,24 @@ class CastProvider extends ChangeNotifier {
   Duration _duration = Duration.zero;
   int _volume = 50;
 
+  // Content browsing state
+  List<DIDLContent> _currentContents = [];
+  final List<String> _navigationStack = ['0'];
+  String _currentTitle = 'Root';
+  bool _isBrowsing = false;
+
   StreamSubscription? _deviceSubscription;
   Timer? _positionTimer;
 
+  // Device getters
   List<DLNADevice> get devices => List.unmodifiable(_devices);
-  DLNADevice? get selectedDevice => _selectedDevice;
+  List<DLNADevice> get renderers =>
+      _devices.where((d) => d.canPlayMedia).toList();
+  List<DLNADevice> get servers =>
+      _devices.where((d) => d.canBrowseMedia).toList();
+
+  DLNADevice? get selectedRenderer => _selectedRenderer;
+  DLNADevice? get selectedServer => _selectedServer;
   MediaItem? get currentMedia => _currentMedia;
   PlaybackState get playbackState => _playbackState;
   bool get isScanning => _isScanning;
@@ -37,6 +54,12 @@ class CastProvider extends ChangeNotifier {
   Duration get duration => _duration;
   int get volume => _volume;
   bool get isPlaying => _playbackState == PlaybackState.playing;
+
+  // Content browsing getters
+  List<DIDLContent> get currentContents => List.unmodifiable(_currentContents);
+  String get currentTitle => _currentTitle;
+  bool get isBrowsing => _isBrowsing;
+  bool get canGoBack => _navigationStack.length > 1;
 
   Future<void> startScan() async {
     if (_isScanning) return;
@@ -47,7 +70,8 @@ class CastProvider extends ChangeNotifier {
     notifyListeners();
 
     _deviceSubscription = _ssdpService.deviceStream.listen((device) {
-      if (!_devices.contains(device)) {
+      // Avoid duplicates by USN
+      if (!_devices.any((d) => d.usn == device.usn)) {
         _devices.add(device);
         notifyListeners();
       }
@@ -55,7 +79,6 @@ class CastProvider extends ChangeNotifier {
 
     await _ssdpService.startDiscovery();
 
-    // Stop scanning after 10 seconds
     Future.delayed(const Duration(seconds: 10), () {
       stopScan();
     });
@@ -68,14 +91,89 @@ class CastProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  void selectDevice(DLNADevice? device) {
-    _selectedDevice = device;
+  void selectRenderer(DLNADevice? device) {
+    _selectedRenderer = device;
     notifyListeners();
   }
 
+  void selectServer(DLNADevice? device) {
+    _selectedServer = device;
+    if (device != null && device.canBrowseMedia) {
+      browseRoot();
+    } else {
+      _currentContents.clear();
+      _navigationStack.clear();
+      _navigationStack.add('0');
+      _currentTitle = 'Root';
+    }
+    notifyListeners();
+  }
+
+  // Content browsing methods
+  Future<void> browseRoot() async {
+    _navigationStack.clear();
+    _navigationStack.add('0');
+    _currentTitle = 'Root';
+    await _browseContainer('0');
+  }
+
+  Future<void> browseContainer(DIDLContent container) async {
+    if (!container.isContainer) return;
+    _navigationStack.add(container.id);
+    _currentTitle = container.title;
+    await _browseContainer(container.id);
+  }
+
+  Future<void> goBack() async {
+    if (_navigationStack.length <= 1) return;
+    _navigationStack.removeLast();
+    final parentId = _navigationStack.last;
+
+    if (parentId == '0') {
+      _currentTitle = 'Root';
+    }
+
+    await _browseContainer(parentId);
+  }
+
+  Future<void> _browseContainer(String containerId) async {
+    if (_selectedServer == null || !_selectedServer!.canBrowseMedia) return;
+
+    _isBrowsing = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      final result = await _contentDirectoryService.browse(
+        _selectedServer!,
+        objectId: containerId,
+      );
+
+      if (result != null) {
+        _currentContents = result.items;
+      } else {
+        _error = 'Failed to browse content';
+        _currentContents = [];
+      }
+    } catch (e) {
+      _error = 'Browse error: $e';
+      _currentContents = [];
+    }
+
+    _isBrowsing = false;
+    notifyListeners();
+  }
+
+  Future<void> refresh() async {
+    if (_navigationStack.isNotEmpty) {
+      await _browseContainer(_navigationStack.last);
+    }
+  }
+
+  // Cast methods
   Future<bool> castMedia(String filePath, String fileName) async {
-    if (_selectedDevice == null) {
-      _error = 'No device selected';
+    if (_selectedRenderer == null) {
+      _error = 'No renderer selected';
       notifyListeners();
       return false;
     }
@@ -85,7 +183,6 @@ class CastProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      // Start local media server
       final mediaUrl = await _mediaServer.startServer(filePath);
       if (mediaUrl == null) {
         _error = 'Failed to start media server';
@@ -105,9 +202,8 @@ class CastProvider extends ChangeNotifier {
         mimeType: mimeType,
       );
 
-      // Set media URL on device
       final success = await _dlnaService.setMediaUrl(
-        _selectedDevice!,
+        _selectedRenderer!,
         mediaUrl,
         fileName,
         mimeType: mimeType,
@@ -120,8 +216,7 @@ class CastProvider extends ChangeNotifier {
         return false;
       }
 
-      // Start playback
-      final playSuccess = await _dlnaService.play(_selectedDevice!);
+      final playSuccess = await _dlnaService.play(_selectedRenderer!);
       if (playSuccess) {
         _playbackState = PlaybackState.playing;
         _startPositionPolling();
@@ -140,10 +235,96 @@ class CastProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> play() async {
-    if (_selectedDevice == null) return;
+  Future<bool> castContent(DIDLContent content) async {
+    if (_selectedRenderer == null) {
+      _error = 'No renderer selected';
+      notifyListeners();
+      return false;
+    }
 
-    final success = await _dlnaService.play(_selectedDevice!);
+    if (content.url == null) {
+      _error = 'Content has no playable URL';
+      notifyListeners();
+      return false;
+    }
+
+    _playbackState = PlaybackState.loading;
+    _error = null;
+    notifyListeners();
+
+    try {
+      final mimeType = content.mimeType ?? _getMimeTypeFromContentType(content.type);
+
+      _currentMedia = MediaItem(
+        path: content.url!,
+        name: content.title,
+        type: _convertContentType(content.type),
+        mimeType: mimeType,
+      );
+
+      final success = await _dlnaService.setMediaUrl(
+        _selectedRenderer!,
+        content.url!,
+        content.title,
+        mimeType: mimeType,
+      );
+
+      if (!success) {
+        _error = 'Failed to set media URL';
+        _playbackState = PlaybackState.idle;
+        notifyListeners();
+        return false;
+      }
+
+      final playSuccess = await _dlnaService.play(_selectedRenderer!);
+      if (playSuccess) {
+        _playbackState = PlaybackState.playing;
+        _startPositionPolling();
+      } else {
+        _error = 'Failed to start playback';
+        _playbackState = PlaybackState.idle;
+      }
+
+      notifyListeners();
+      return playSuccess;
+    } catch (e) {
+      _error = 'Cast error: $e';
+      _playbackState = PlaybackState.idle;
+      notifyListeners();
+      return false;
+    }
+  }
+
+  MediaType _convertContentType(ContentType type) {
+    switch (type) {
+      case ContentType.video:
+        return MediaType.video;
+      case ContentType.audio:
+        return MediaType.audio;
+      case ContentType.image:
+        return MediaType.image;
+      default:
+        return MediaType.video;
+    }
+  }
+
+  String _getMimeTypeFromContentType(ContentType type) {
+    switch (type) {
+      case ContentType.video:
+        return 'video/mp4';
+      case ContentType.audio:
+        return 'audio/mp3';
+      case ContentType.image:
+        return 'image/jpeg';
+      default:
+        return 'video/mp4';
+    }
+  }
+
+  Future<void> play() async {
+    if (_selectedRenderer == null) return;
+
+    final success = await _dlnaService.play(_selectedRenderer!);
     if (success) {
       _playbackState = PlaybackState.playing;
       _startPositionPolling();
@@ -152,9 +333,9 @@ class CastProvider extends ChangeNotifier {
   }
 
   Future<void> pause() async {
-    if (_selectedDevice == null) return;
+    if (_selectedRenderer == null) return;
 
-    final success = await _dlnaService.pause(_selectedDevice!);
+    final success = await _dlnaService.pause(_selectedRenderer!);
     if (success) {
       _playbackState = PlaybackState.paused;
       _stopPositionPolling();
@@ -163,9 +344,9 @@ class CastProvider extends ChangeNotifier {
   }
 
   Future<void> stop() async {
-    if (_selectedDevice == null) return;
+    if (_selectedRenderer == null) return;
 
-    await _dlnaService.stop(_selectedDevice!);
+    await _dlnaService.stop(_selectedRenderer!);
     await _mediaServer.stopServer();
 
     _playbackState = PlaybackState.stopped;
@@ -177,17 +358,17 @@ class CastProvider extends ChangeNotifier {
   }
 
   Future<void> seek(Duration position) async {
-    if (_selectedDevice == null) return;
+    if (_selectedRenderer == null) return;
 
-    await _dlnaService.seek(_selectedDevice!, position);
+    await _dlnaService.seek(_selectedRenderer!, position);
     _position = position;
     notifyListeners();
   }
 
   Future<void> setVolume(int volume) async {
-    if (_selectedDevice == null) return;
+    if (_selectedRenderer == null) return;
 
-    final success = await _dlnaService.setVolume(_selectedDevice!, volume);
+    final success = await _dlnaService.setVolume(_selectedRenderer!, volume);
     if (success) {
       _volume = volume;
       notifyListeners();
@@ -197,9 +378,9 @@ class CastProvider extends ChangeNotifier {
   void _startPositionPolling() {
     _positionTimer?.cancel();
     _positionTimer = Timer.periodic(const Duration(seconds: 1), (_) async {
-      if (_selectedDevice == null) return;
+      if (_selectedRenderer == null) return;
 
-      final info = await _dlnaService.getPositionInfo(_selectedDevice!);
+      final info = await _dlnaService.getPositionInfo(_selectedRenderer!);
       if (info != null) {
         _position = info['position'] as Duration;
         _duration = info['duration'] as Duration;

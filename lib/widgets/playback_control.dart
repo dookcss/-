@@ -48,7 +48,7 @@ class PlaybackControlWidget extends StatelessWidget {
                               overflow: TextOverflow.ellipsis,
                             ),
                             Text(
-                              provider.selectedDevice?.friendlyName ?? 'Unknown Device',
+                              provider.selectedRenderer?.friendlyName ?? 'Unknown Device',
                               style: const TextStyle(
                                 fontSize: 12,
                                 color: Colors.grey,
