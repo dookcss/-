@@ -8,6 +8,7 @@ import '../services/ssdp_service.dart';
 import '../services/dlna_service.dart';
 import '../services/media_server.dart';
 import '../services/content_directory_service.dart';
+import '../services/device_ip_storage.dart';
 
 enum PlaybackState { idle, loading, playing, paused, stopped }
 
@@ -39,6 +40,9 @@ class CastProvider extends ChangeNotifier {
 
   // Manual discovery state
   bool _isManualDiscovering = false;
+
+  // Saved IPs for persistent discovery
+  List<String> _savedIPs = [];
 
   StreamSubscription? _deviceSubscription;
   Timer? _positionTimer;
@@ -83,6 +87,74 @@ class CastProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  // Saved IPs getters
+  List<String> get savedIPs => List.unmodifiable(_savedIPs);
+
+  /// 加载保存的IP地址
+  Future<void> loadSavedIPs() async {
+    _savedIPs = await DeviceIPStorage.getSavedIPs();
+    notifyListeners();
+  }
+
+  /// 添加IP地址到保存列表
+  Future<bool> addSavedIP(String ip) async {
+    if (!DeviceIPStorage.isValidIP(ip)) return false;
+    
+    final success = await DeviceIPStorage.addIP(ip);
+    if (success) {
+      await loadSavedIPs();
+    }
+    return success;
+  }
+
+  /// 从保存列表删除IP地址
+  Future<void> removeSavedIP(String ip) async {
+    await DeviceIPStorage.removeIP(ip);
+    await loadSavedIPs();
+  }
+
+  /// 探测所有保存的IP地址
+  Future<void> probeSavedIPs() async {
+    if (_isManualDiscovering) return;
+    
+    final ips = await DeviceIPStorage.getSavedIPs();
+    if (ips.isEmpty) return;
+
+    _isManualDiscovering = true;
+    _error = null;
+    notifyListeners();
+
+    // 订阅设备流
+    StreamSubscription<DLNADevice>? subscription;
+    subscription = _ssdpService.deviceStream.listen((device) {
+      if (!_devices.any((d) => d.usn == device.usn)) {
+        _devices.add(device);
+        if (_autoSelectRenderer && _selectedRenderer == null && device.canPlayMedia) {
+          _selectedRenderer = device;
+        }
+        notifyListeners();
+      }
+    });
+
+    // 逐个探测保存的IP
+    for (final ip in ips) {
+      try {
+        await _ssdpService.probeDeviceByIP(ip);
+        await Future.delayed(const Duration(milliseconds: 300));
+      } catch (e) {
+        // 忽略单个IP的错误，继续下一个
+      }
+    }
+
+    // 等待异步添加完成
+    await Future.delayed(const Duration(milliseconds: 500));
+    await subscription.cancel();
+
+    _isManualDiscovering = false;
+    notifyListeners();
+  }
+
+
   Future<void> startScan() async {
     if (_isScanning) return;
 
@@ -107,10 +179,27 @@ class CastProvider extends ChangeNotifier {
 
     await _ssdpService.startDiscovery();
 
+    // 同时探测保存的IP（对iOS特别有用，因为SSDP发现可能失败）
+    _probeSavedIPsInBackground();
+
     Future.delayed(const Duration(seconds: 10), () {
       stopScan();
     });
   }
+
+  /// 后台探测保存的IP（不影响主扫描流程）
+  Future<void> _probeSavedIPsInBackground() async {
+    final ips = await DeviceIPStorage.getSavedIPs();
+    for (final ip in ips) {
+      try {
+        await _ssdpService.probeDeviceByIP(ip);
+        await Future.delayed(const Duration(milliseconds: 200));
+      } catch (e) {
+        // 忽略错误
+      }
+    }
+  }
+
 
   void stopScan() {
     _isScanning = false;
