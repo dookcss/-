@@ -50,7 +50,7 @@ class SettingsScreen extends StatelessWidget {
               ListTile(
                 leading: const Icon(Icons.info_outline),
                 title: const Text('版本'),
-                subtitle: const Text('1.0.1'),
+                subtitle: const Text('1.0.2'),
               ),
               ListTile(
                 leading: const Icon(Icons.code),
