@@ -46,15 +46,30 @@
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>This app needs local network access to discover and cast to DLNA devices</string>
+	<string>DLNA Cast needs local network access to discover and control smart TVs and streaming devices on your network.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_upnp._tcp</string>
 		<string>_ssdp._udp</string>
+		<string>_dlna._tcp</string>
 	</array>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>This app needs access to your photo library to cast media files</string>
+	<string>DLNA Cast needs access to your photo library to cast videos, photos and music to your TV.</string>
 	<key>NSAppleMusicUsageDescription</key>
-	<string>This app needs access to your music library to cast audio files</string>
+	<string>DLNA Cast needs access to your music library to cast audio files to your TV.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>DLNA Cast may save media to your photo library.</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+		<string>fetch</string>
+	</array>
 </dict>
 </plist>
