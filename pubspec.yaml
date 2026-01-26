@@ -1,0 +1,36 @@
+name: dlna_cast
+description: "LAN Screen Cast - DLNA/UPNP media casting app"
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.10.7
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.8
+
+  # DLNA/UPNP device discovery and casting
+  xml: ^6.5.0
+  http: ^1.2.0
+
+  # Network and permissions
+  network_info_plus: ^6.0.0
+  permission_handler: ^11.3.0
+
+  # Media selection
+  file_picker: ^8.0.0
+
+  # State management
+  provider: ^6.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
