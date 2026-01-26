@@ -28,10 +28,13 @@ class CastProvider extends ChangeNotifier {
   Duration _duration = Duration.zero;
   int _volume = 50;
 
+  // Settings
+  bool _autoSelectRenderer = true;
+
   // Content browsing state
   List<DIDLContent> _currentContents = [];
   final List<String> _navigationStack = ['0'];
-  String _currentTitle = 'Root';
+  String _currentTitle = '根目录';
   bool _isBrowsing = false;
 
   StreamSubscription? _deviceSubscription;
@@ -54,12 +57,18 @@ class CastProvider extends ChangeNotifier {
   Duration get duration => _duration;
   int get volume => _volume;
   bool get isPlaying => _playbackState == PlaybackState.playing;
+  bool get autoSelectRenderer => _autoSelectRenderer;
 
   // Content browsing getters
   List<DIDLContent> get currentContents => List.unmodifiable(_currentContents);
   String get currentTitle => _currentTitle;
   bool get isBrowsing => _isBrowsing;
   bool get canGoBack => _navigationStack.length > 1;
+
+  void setAutoSelectRenderer(bool value) {
+    _autoSelectRenderer = value;
+    notifyListeners();
+  }
 
   Future<void> startScan() async {
     if (_isScanning) return;
@@ -73,6 +82,12 @@ class CastProvider extends ChangeNotifier {
       // Avoid duplicates by USN
       if (!_devices.any((d) => d.usn == device.usn)) {
         _devices.add(device);
+
+        // Auto-select first renderer if enabled
+        if (_autoSelectRenderer && _selectedRenderer == null && device.canPlayMedia) {
+          _selectedRenderer = device;
+        }
+
         notifyListeners();
       }
     });
@@ -104,7 +119,7 @@ class CastProvider extends ChangeNotifier {
       _currentContents.clear();
       _navigationStack.clear();
       _navigationStack.add('0');
-      _currentTitle = 'Root';
+      _currentTitle = '根目录';
     }
     notifyListeners();
   }
@@ -113,7 +128,7 @@ class CastProvider extends ChangeNotifier {
   Future<void> browseRoot() async {
     _navigationStack.clear();
     _navigationStack.add('0');
-    _currentTitle = 'Root';
+    _currentTitle = '根目录';
     await _browseContainer('0');
   }
 
@@ -130,7 +145,7 @@ class CastProvider extends ChangeNotifier {
     final parentId = _navigationStack.last;
 
     if (parentId == '0') {
-      _currentTitle = 'Root';
+      _currentTitle = '根目录';
     }
 
     await _browseContainer(parentId);
@@ -152,11 +167,11 @@ class CastProvider extends ChangeNotifier {
       if (result != null) {
         _currentContents = result.items;
       } else {
-        _error = 'Failed to browse content';
+        _error = '浏览内容失败';
         _currentContents = [];
       }
     } catch (e) {
-      _error = 'Browse error: $e';
+      _error = '浏览错误: $e';
       _currentContents = [];
     }
 
@@ -173,7 +188,7 @@ class CastProvider extends ChangeNotifier {
   // Cast methods
   Future<bool> castMedia(String filePath, String fileName) async {
     if (_selectedRenderer == null) {
-      _error = 'No renderer selected';
+      _error = '未选择播放设备';
       notifyListeners();
       return false;
     }
@@ -185,7 +200,7 @@ class CastProvider extends ChangeNotifier {
     try {
       final mediaUrl = await _mediaServer.startServer(filePath);
       if (mediaUrl == null) {
-        _error = 'Failed to start media server';
+        _error = '启动媒体服务器失败';
         _playbackState = PlaybackState.idle;
         notifyListeners();
         return false;
@@ -210,7 +225,7 @@ class CastProvider extends ChangeNotifier {
       );
 
       if (!success) {
-        _error = 'Failed to set media URL';
+        _error = '设置媒体URL失败';
         _playbackState = PlaybackState.idle;
         notifyListeners();
         return false;
@@ -221,29 +236,88 @@ class CastProvider extends ChangeNotifier {
         _playbackState = PlaybackState.playing;
         _startPositionPolling();
       } else {
-        _error = 'Failed to start playback';
+        _error = '开始播放失败';
         _playbackState = PlaybackState.idle;
       }
 
       notifyListeners();
       return playSuccess;
     } catch (e) {
-      _error = 'Cast error: $e';
+      _error = '投屏错误: $e';
       _playbackState = PlaybackState.idle;
       notifyListeners();
       return false;
     }
   }
 
+  Future<bool> castUrl(String url, String title, String mimeType) async {
+    if (_selectedRenderer == null) {
+      _error = '未选择播放设备';
+      notifyListeners();
+      return false;
+    }
+
+    _playbackState = PlaybackState.loading;
+    _error = null;
+    notifyListeners();
+
+    try {
+      _currentMedia = MediaItem(
+        path: url,
+        name: title,
+        type: _getMediaTypeFromMime(mimeType),
+        mimeType: mimeType,
+      );
+
+      final success = await _dlnaService.setMediaUrl(
+        _selectedRenderer!,
+        url,
+        title,
+        mimeType: mimeType,
+      );
+
+      if (!success) {
+        _error = '设置媒体URL失败';
+        _playbackState = PlaybackState.idle;
+        notifyListeners();
+        return false;
+      }
+
+      final playSuccess = await _dlnaService.play(_selectedRenderer!);
+      if (playSuccess) {
+        _playbackState = PlaybackState.playing;
+        _startPositionPolling();
+      } else {
+        _error = '开始播放失败';
+        _playbackState = PlaybackState.idle;
+      }
+
+      notifyListeners();
+      return playSuccess;
+    } catch (e) {
+      _error = '投屏错误: $e';
+      _playbackState = PlaybackState.idle;
+      notifyListeners();
+      return false;
+    }
+  }
+
+  MediaType _getMediaTypeFromMime(String mimeType) {
+    if (mimeType.startsWith('video/')) return MediaType.video;
+    if (mimeType.startsWith('audio/')) return MediaType.audio;
+    if (mimeType.startsWith('image/')) return MediaType.image;
+    return MediaType.video;
+  }
+
   Future<bool> castContent(DIDLContent content) async {
     if (_selectedRenderer == null) {
-      _error = 'No renderer selected';
+      _error = '未选择播放设备';
       notifyListeners();
       return false;
     }
 
     if (content.url == null) {
-      _error = 'Content has no playable URL';
+      _error = '内容没有可播放的URL';
       notifyListeners();
       return false;
     }
@@ -270,7 +344,7 @@ class CastProvider extends ChangeNotifier {
       );
 
       if (!success) {
-        _error = 'Failed to set media URL';
+        _error = '设置媒体URL失败';
         _playbackState = PlaybackState.idle;
         notifyListeners();
         return false;
@@ -281,14 +355,14 @@ class CastProvider extends ChangeNotifier {
         _playbackState = PlaybackState.playing;
         _startPositionPolling();
       } else {
-        _error = 'Failed to start playback';
+        _error = '开始播放失败';
         _playbackState = PlaybackState.idle;
       }
 
       notifyListeners();
       return playSuccess;
     } catch (e) {
-      _error = 'Cast error: $e';
+      _error = '投屏错误: $e';
       _playbackState = PlaybackState.idle;
       notifyListeners();
       return false;

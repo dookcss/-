@@ -7,7 +7,7 @@ void main() {
     await tester.pumpWidget(const DLNACastApp());
     await tester.pumpAndSettle();
 
-    expect(find.text('DLNA Cast'), findsOneWidget);
-    expect(find.text('Devices'), findsOneWidget);
+    expect(find.text('局域网投屏'), findsOneWidget);
+    expect(find.text('设备'), findsOneWidget);
   });
 }

@@ -5,6 +5,8 @@ import '../providers/cast_provider.dart';
 import '../widgets/device_list.dart';
 import '../widgets/media_browser.dart';
 import '../widgets/playback_control.dart';
+import '../widgets/url_cast_dialog.dart';
+import 'settings_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -35,14 +37,14 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('DLNA Cast'),
+        title: const Text('局域网投屏'),
         centerTitle: true,
         elevation: 0,
         bottom: TabBar(
           controller: _tabController,
           tabs: const [
-            Tab(icon: Icon(Icons.devices), text: 'Devices'),
-            Tab(icon: Icon(Icons.folder), text: 'Browse'),
+            Tab(icon: Icon(Icons.devices), text: '设备'),
+            Tab(icon: Icon(Icons.folder), text: '浏览'),
           ],
         ),
         actions: [
@@ -60,7 +62,42 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                       ),
                       visualDensity: VisualDensity.compact,
                     ),
-                  const SizedBox(width: 8),
+                  PopupMenuButton<String>(
+                    icon: const Icon(Icons.more_vert),
+                    onSelected: (value) {
+                      switch (value) {
+                        case 'url':
+                          _showUrlCastDialog();
+                          break;
+                        case 'settings':
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(builder: (_) => const SettingsScreen()),
+                          );
+                          break;
+                      }
+                    },
+                    itemBuilder: (context) => [
+                      const PopupMenuItem(
+                        value: 'url',
+                        child: ListTile(
+                          leading: Icon(Icons.link),
+                          title: Text('URL投屏'),
+                          contentPadding: EdgeInsets.zero,
+                          visualDensity: VisualDensity.compact,
+                        ),
+                      ),
+                      const PopupMenuItem(
+                        value: 'settings',
+                        child: ListTile(
+                          leading: Icon(Icons.settings),
+                          title: Text('设置'),
+                          contentPadding: EdgeInsets.zero,
+                          visualDensity: VisualDensity.compact,
+                        ),
+                      ),
+                    ],
+                  ),
                 ],
               );
             },
@@ -88,10 +125,17 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
             onPressed: hasRenderer ? () => _selectAndCastMedia(context) : null,
             backgroundColor: hasRenderer ? null : Colors.grey,
             icon: const Icon(Icons.add),
-            label: const Text('Local File'),
+            label: const Text('本地文件'),
           );
         },
       ),
+    );
+  }
+
+  void _showUrlCastDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => const UrlCastDialog(),
     );
   }
 
@@ -100,7 +144,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
     if (provider.selectedRenderer == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please select a renderer device first')),
+        const SnackBar(content: Text('请先选择播放设备')),
       );
       return;
     }
@@ -123,13 +167,22 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         if (filePath != null) {
           final success = await provider.castMedia(filePath, fileName);
 
-          if (!success && context.mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text(provider.error ?? 'Failed to cast media'),
-                backgroundColor: Colors.red,
-              ),
-            );
+          if (context.mounted) {
+            if (success) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('正在投屏: $fileName'),
+                  backgroundColor: Colors.green,
+                ),
+              );
+            } else {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(provider.error ?? '投屏失败'),
+                  backgroundColor: Colors.red,
+                ),
+              );
+            }
           }
         }
       }
@@ -137,7 +190,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Error: $e'),
+            content: Text('错误: $e'),
             backgroundColor: Colors.red,
           ),
         );

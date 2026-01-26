@@ -2,7 +2,7 @@ name: dlna_cast
 description: "LAN Screen Cast - DLNA/UPNP media casting app"
 publish_to: 'none'
 
-version: 1.0.0+1
+version: 1.0.1+2
 
 environment:
   sdk: ^3.10.7
@@ -26,6 +26,9 @@ dependencies:
 
   # State management
   provider: ^6.1.0
+
+  # Settings persistence
+  shared_preferences: ^2.2.0
 
 dev_dependencies:
   flutter_test:

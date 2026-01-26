@@ -11,15 +11,37 @@ class MediaBrowserWidget extends StatelessWidget {
     return Consumer<CastProvider>(
       builder: (context, provider, child) {
         if (provider.selectedServer == null) {
-          return const Center(
+          return Center(
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(Icons.folder_open, size: 64, color: Colors.grey),
-                SizedBox(height: 16),
+                Container(
+                  width: 100,
+                  height: 100,
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    Icons.folder_open,
+                    size: 48,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(height: 24),
                 Text(
-                  'Select a Media Server to browse',
-                  style: TextStyle(color: Colors.grey),
+                  '请选择媒体服务器',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  '在设备页面选择一个媒体服务器来浏览内容',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                  textAlign: TextAlign.center,
                 ),
               ],
             ),
@@ -36,15 +58,29 @@ class MediaBrowserWidget extends StatelessWidget {
               child: provider.isBrowsing
                   ? const Center(child: CircularProgressIndicator())
                   : provider.currentContents.isEmpty
-                      ? const Center(
+                      ? Center(
                           child: Column(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
-                              Icon(Icons.folder_off, size: 64, color: Colors.grey),
-                              SizedBox(height: 16),
+                              Container(
+                                width: 80,
+                                height: 80,
+                                decoration: BoxDecoration(
+                                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                                  shape: BoxShape.circle,
+                                ),
+                                child: Icon(
+                                  Icons.folder_off,
+                                  size: 40,
+                                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                ),
+                              ),
+                              const SizedBox(height: 16),
                               Text(
-                                'This folder is empty',
-                                style: TextStyle(color: Colors.grey),
+                                '此文件夹为空',
+                                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                ),
                               ),
                             ],
                           ),
@@ -88,15 +124,17 @@ class MediaBrowserWidget extends StatelessWidget {
           IconButton(
             icon: const Icon(Icons.arrow_back),
             onPressed: provider.canGoBack ? provider.goBack : null,
+            tooltip: '返回',
           ),
           IconButton(
             icon: const Icon(Icons.home),
             onPressed: provider.browseRoot,
+            tooltip: '根目录',
           ),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              provider.currentTitle,
+              provider.currentTitle == 'Root' ? '根目录' : provider.currentTitle,
               style: const TextStyle(fontWeight: FontWeight.bold),
               overflow: TextOverflow.ellipsis,
             ),
@@ -104,6 +142,7 @@ class MediaBrowserWidget extends StatelessWidget {
           IconButton(
             icon: const Icon(Icons.refresh),
             onPressed: provider.refresh,
+            tooltip: '刷新',
           ),
         ],
       ),
@@ -122,7 +161,7 @@ class MediaBrowserWidget extends StatelessWidget {
     if (provider.selectedRenderer == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Please select a renderer device first'),
+          content: Text('请先选择播放设备'),
           backgroundColor: Colors.orange,
         ),
       );
@@ -130,13 +169,22 @@ class MediaBrowserWidget extends StatelessWidget {
     }
 
     final success = await provider.castContent(content);
-    if (!success && context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(provider.error ?? 'Failed to cast'),
-          backgroundColor: Colors.red,
-        ),
-      );
+    if (context.mounted) {
+      if (success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('正在投屏: ${content.title}'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(provider.error ?? '投屏失败'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     }
   }
 }
@@ -202,7 +250,7 @@ class _ContentListTile extends StatelessWidget {
     // Show thumbnail if available
     if (content.albumArtUrl != null && !content.isContainer) {
       return ClipRRect(
-        borderRadius: BorderRadius.circular(4),
+        borderRadius: BorderRadius.circular(8),
         child: Image.network(
           content.albumArtUrl!,
           width: 48,
@@ -211,7 +259,10 @@ class _ContentListTile extends StatelessWidget {
           errorBuilder: (_, __, ___) => Container(
             width: 48,
             height: 48,
-            color: iconColor.withValues(alpha: 0.2),
+            decoration: BoxDecoration(
+              color: iconColor.withValues(alpha: 0.2),
+              borderRadius: BorderRadius.circular(8),
+            ),
             child: Icon(iconData, color: iconColor),
           ),
         ),
@@ -223,7 +274,7 @@ class _ContentListTile extends StatelessWidget {
       height: 48,
       decoration: BoxDecoration(
         color: iconColor.withValues(alpha: 0.2),
-        borderRadius: BorderRadius.circular(4),
+        borderRadius: BorderRadius.circular(8),
       ),
       child: Icon(iconData, color: iconColor),
     );
@@ -248,7 +299,7 @@ class _ContentListTile extends StatelessWidget {
       parts.add(content.resolution!);
     }
     if (content.isContainer && content.childCount > 0) {
-      parts.add('${content.childCount} items');
+      parts.add('${content.childCount} 项');
     }
 
     if (parts.isEmpty) return null;
@@ -271,7 +322,7 @@ class _ContentListTile extends StatelessWidget {
         icon: const Icon(Icons.cast),
         color: Theme.of(context).colorScheme.primary,
         onPressed: onCast,
-        tooltip: 'Cast to TV',
+        tooltip: '投屏到电视',
       );
     }
 

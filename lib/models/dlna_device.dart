@@ -43,7 +43,18 @@ class DLNADevice {
       case DLNADeviceType.server:
         return 'DMS';
       case DLNADeviceType.unknown:
-        return 'Unknown';
+        return '未知';
+    }
+  }
+
+  String get typeLabelChinese {
+    switch (type) {
+      case DLNADeviceType.renderer:
+        return '播放设备';
+      case DLNADeviceType.server:
+        return '媒体服务器';
+      case DLNADeviceType.unknown:
+        return '未知设备';
     }
   }
 
