@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:file_picker/file_picker.dart';
@@ -6,6 +7,7 @@ import '../widgets/device_list.dart';
 import '../widgets/media_browser.dart';
 import '../widgets/playback_control.dart';
 import '../widgets/url_cast_dialog.dart';
+import '../services/local_network_permission.dart';
 import 'settings_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -23,8 +25,29 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<CastProvider>().startScan();
+      _initializeAndScan();
     });
+  }
+
+  Future<void> _initializeAndScan() async {
+    // On iOS, request local network permission first
+    if (Platform.isIOS) {
+      final hasPermission = await LocalNetworkPermission.requestPermission();
+      if (!hasPermission && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('请在设置中允许本地网络访问'),
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
+      // Wait a bit for permission dialog to be handled
+      await Future.delayed(const Duration(milliseconds: 500));
+    }
+
+    if (mounted) {
+      context.read<CastProvider>().startScan();
+    }
   }
 
   @override
