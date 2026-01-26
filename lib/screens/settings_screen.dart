@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import 'package:network_info_plus/network_info_plus.dart';
 import '../providers/cast_provider.dart';
 import '../services/ssdp_service.dart';
+import '../services/local_network_permission.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -24,6 +25,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final TextEditingController _ipController = TextEditingController();
   StreamSubscription<SSDPLogEntry>? _logSubscription;
   final List<SSDPLogEntry> _displayLogs = [];
+  bool _isDiagnosing = false;
+  NetworkDiagnostics? _diagnosticsResult;
 
   @override
   void initState() {
@@ -220,6 +223,122 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ],
               const Divider(),
 
+              // Network Diagnostics Section (iOS)
+              if (Platform.isIOS) ...[
+                _buildSectionHeader(context, '网络诊断'),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      ElevatedButton.icon(
+                        onPressed: _isDiagnosing ? null : _runNetworkDiagnostics,
+                        icon: _isDiagnosing
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Icon(Icons.health_and_safety),
+                        label: Text(_isDiagnosing ? '诊断中...' : '运行网络诊断'),
+                      ),
+                      if (_diagnosticsResult != null) ...[
+                        const SizedBox(height: 8),
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: _diagnosticsResult!.isHealthy
+                                ? Colors.green.withValues(alpha: 0.1)
+                                : Colors.red.withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                              color: _diagnosticsResult!.isHealthy
+                                  ? Colors.green
+                                  : Colors.red,
+                            ),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Icon(
+                                    _diagnosticsResult!.isHealthy
+                                        ? Icons.check_circle
+                                        : Icons.error,
+                                    color: _diagnosticsResult!.isHealthy
+                                        ? Colors.green
+                                        : Colors.red,
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    _diagnosticsResult!.isHealthy ? '网络正常' : '网络异常',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      color: _diagnosticsResult!.isHealthy
+                                          ? Colors.green
+                                          : Colors.red,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                '本地IP: ${_diagnosticsResult!.localIP ?? "未知"}',
+                                style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                              ),
+                              Text(
+                                '网关IP: ${_diagnosticsResult!.gatewayIP ?? "未知"}',
+                                style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                              ),
+                              const SizedBox(height: 4),
+                              ..._diagnosticsResult!.successes.map((s) => Text(
+                                '✓ $s',
+                                style: const TextStyle(
+                                  fontFamily: 'monospace',
+                                  fontSize: 11,
+                                  color: Colors.green,
+                                ),
+                              )),
+                              ..._diagnosticsResult!.errors.map((e) => Text(
+                                '✗ $e',
+                                style: const TextStyle(
+                                  fontFamily: 'monospace',
+                                  fontSize: 11,
+                                  color: Colors.red,
+                                ),
+                              )),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        OutlinedButton.icon(
+                          onPressed: () {
+                            Clipboard.setData(ClipboardData(
+                              text: _diagnosticsResult.toString(),
+                            ));
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('诊断结果已复制')),
+                            );
+                          },
+                          icon: const Icon(Icons.copy, size: 16),
+                          label: const Text('复制诊断结果'),
+                        ),
+                      ],
+                      const SizedBox(height: 8),
+                      const Text(
+                        'errno=65表示iOS阻止了本地网络访问。请检查:\n'
+                        '1. 设置 → 隐私 → 本地网络 → 允许本app\n'
+                        '2. 确保设备在同一WiFi网络\n'
+                        '3. 如使用TrollStore，需要重新安装以应用权限',
+                        style: TextStyle(fontSize: 11, color: Colors.grey),
+                      ),
+                    ],
+                  ),
+                ),
+                const Divider(),
+              ],
+
               // Manual Device Discovery Section
               _buildSectionHeader(context, '手动添加设备'),
               Padding(
@@ -402,7 +521,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ListTile(
                 leading: const Icon(Icons.info_outline),
                 title: const Text('版本'),
-                subtitle: const Text('1.0.6'),
+                subtitle: const Text('1.0.7'),
               ),
               ListTile(
                 leading: const Icon(Icons.phone_iphone),
@@ -416,6 +535,51 @@ class _SettingsScreenState extends State<SettingsScreen> {
         },
       ),
     );
+  }
+
+  Future<void> _runNetworkDiagnostics() async {
+    setState(() {
+      _isDiagnosing = true;
+      _diagnosticsResult = null;
+    });
+
+    try {
+      // 如果有输入IP，用那个IP测试
+      String? targetIP;
+      final input = _ipController.text.trim();
+      if (input.isNotEmpty) {
+        if (input.startsWith('http')) {
+          try {
+            targetIP = Uri.parse(input).host;
+          } catch (_) {}
+        } else {
+          final parts = input.split('.');
+          if (parts.length == 4) {
+            targetIP = input;
+          }
+        }
+      }
+
+      final result = await LocalNetworkPermission.runDiagnostics(targetIP: targetIP);
+
+      if (mounted) {
+        setState(() {
+          _diagnosticsResult = result;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('诊断失败: $e')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isDiagnosing = false;
+        });
+      }
+    }
   }
 
   bool _isWifiInterface(String name) {

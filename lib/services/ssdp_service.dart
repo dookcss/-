@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:xml/xml.dart';
 import '../models/dlna_device.dart';
+import 'ios_native_network.dart';
 
 // iOS网络诊断工具
 
@@ -537,11 +538,79 @@ class SSDPService {
       _log('ERROR', '探测设备失败: $e');
     }
     
-    // iOS专用: 如果UDP探测失败，尝试直接HTTP访问常见端口
+    // iOS专用: 优先使用原生网络API
     if (Platform.isIOS) {
+      await _probeDeviceByNative(ip);
+    }
+  }
+
+  /// iOS专用: 使用原生URLSession探测设备（绕过Dart socket限制）
+  Future<void> _probeDeviceByNative(String ip) async {
+    _log('INFO', 'iOS: 使用原生网络API探测 $ip');
+    
+    try {
+      // 首先测试TCP连接
+      _log('DEBUG', 'iOS Native: 测试TCP连接到 $ip:49152');
+      final connected = await IOSNativeNetwork.checkConnection(ip, 49152);
+      _log('INFO', 'iOS Native: TCP连接${connected ? "成功" : "失败"}');
+      
+      if (connected) {
+        // TCP连接成功，尝试获取设备描述
+        final url = await IOSNativeNetwork.probeDeviceDescription(ip);
+        if (url != null) {
+          _log('INFO', 'iOS Native: 发现设备 $url');
+          // 使用原生网络获取设备描述并解析
+          await _fetchDeviceDescriptionNative(url);
+        }
+      }
+    } on NetworkException catch (e) {
+      _log('ERROR', 'iOS Native: ${e.code} - ${e.message}');
+      // 原生网络失败，回退到Dart HTTP
+      _log('INFO', 'iOS: 回退到Dart HTTP探测');
+      await _probeDeviceByHTTP(ip);
+    } catch (e) {
+      _log('ERROR', 'iOS Native: 未知错误 $e');
       await _probeDeviceByHTTP(ip);
     }
   }
+
+  /// 使用原生网络获取设备描述
+  Future<void> _fetchDeviceDescriptionNative(String url) async {
+    try {
+      final response = await IOSNativeNetwork.fetchUrl(url);
+      final body = response['body'] as String?;
+      
+      if (body != null && body.isNotEmpty) {
+        _log('INFO', 'iOS Native: 获取到设备描述 (${body.length} bytes)');
+        
+        // 解析XML
+        final document = XmlDocument.parse(body);
+        final deviceElements = document.findAllElements('device');
+        if (deviceElements.isEmpty) return;
+        
+        final rootDevice = deviceElements.first;
+        final baseUrl = _getBaseUrl(url);
+        
+        final allDevices = [rootDevice, ...rootDevice.findAllElements('device')];
+        
+        for (final device in allDevices) {
+          final parsed = _parseDevice(device, url, baseUrl);
+          if (parsed != null) {
+            if (parsed.canPlayMedia || parsed.canBrowseMedia) {
+              if (!_discoveredLocations.contains(url)) {
+                _discoveredLocations.add(url);
+                _log('INFO', 'iOS Native: 添加设备 ${parsed.friendlyName}');
+                _deviceController.add(parsed);
+              }
+            }
+          }
+        }
+      }
+    } catch (e) {
+      _log('ERROR', 'iOS Native: 解析设备描述失败: $e');
+    }
+  }
+
 
   /// iOS专用: 通过HTTP直接探测设备
   /// 当SSDP无法工作时，直接尝试访问常见的DLNA描述文件端口
