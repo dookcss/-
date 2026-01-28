@@ -80,15 +80,35 @@ jobs:
       run: |
         cd build/ios/iphoneos
         
+        # 创建精简版 entitlements（避免闪退）
+        cat > entitlements.plist << 'EOF'
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>com.apple.security.network.client</key>
+            <true/>
+            <key>com.apple.security.network.server</key>
+            <true/>
+            <key>com.apple.developer.networking.multicast</key>
+            <true/>
+            <key>get-task-allow</key>
+            <true/>
+            <key>platform-application</key>
+            <true/>
+        </dict>
+        </plist>
+        EOF
+        
         echo "📦 创建 Payload 目录..."
         mkdir -p Payload
         cp -r Runner.app Payload/
         
-        echo "✍️ 应用网络权限 entitlements..."
-        ldid -S../../../ios/Runner/Runner.entitlements Payload/Runner.app/Runner
+        echo "✍️ 应用精简版 entitlements..."
+        ldid -Sentitlements.plist Payload/Runner.app/Runner
         
         echo "🔍 验证 entitlements..."
-        ldid -e Payload/Runner.app/Runner || true
+        ldid -e Payload/Runner.app/Runner
         
         echo "📦 打包 IPA..."
         zip -qr ../../../app-release.ipa Payload
