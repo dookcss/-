@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import '../models/dlna_device.dart';
@@ -44,6 +45,11 @@ class CastProvider extends ChangeNotifier {
   // Saved IPs for persistent discovery
   List<String> _savedIPs = [];
 
+  // Local file browsing state
+  String? _localDirectory;
+  List<LocalFileItem> _localFiles = [];
+  bool _isLoadingLocalFiles = false;
+
   StreamSubscription? _deviceSubscription;
   Timer? _positionTimer;
 
@@ -72,6 +78,11 @@ class CastProvider extends ChangeNotifier {
   String get currentTitle => _currentTitle;
   bool get isBrowsing => _isBrowsing;
   bool get canGoBack => _navigationStack.length > 1;
+
+  // Local file browsing getters
+  String? get localDirectory => _localDirectory;
+  List<LocalFileItem> get localFiles => List.unmodifiable(_localFiles);
+  bool get isLoadingLocalFiles => _isLoadingLocalFiles;
 
   // SSDP log getters
   List<SSDPLogEntry> get ssdpLogs => _ssdpService.logs;
@@ -643,6 +654,99 @@ class CastProvider extends ChangeNotifier {
     _positionTimer = null;
   }
 
+  // ==================== Local File Browsing ====================
+  
+  /// 选择本地目录
+  Future<void> selectLocalDirectory(String path) async {
+    _localDirectory = path;
+    await loadLocalFiles();
+  }
+
+  /// 加载本地目录中的视频文件
+  Future<void> loadLocalFiles() async {
+    if (_localDirectory == null) return;
+
+    _isLoadingLocalFiles = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      final dir = Directory(_localDirectory!);
+      if (!await dir.exists()) {
+        _error = '目录不存在';
+        _localFiles = [];
+        _isLoadingLocalFiles = false;
+        notifyListeners();
+        return;
+      }
+
+      final files = <LocalFileItem>[];
+      final videoExtensions = ['mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'webm', 'm4v', 'ts', '3gp'];
+
+      await for (final entity in dir.list(recursive: false)) {
+        if (entity is File) {
+          final name = entity.path.split(Platform.pathSeparator).last;
+          final ext = name.split('.').last.toLowerCase();
+          
+          if (videoExtensions.contains(ext)) {
+            final stat = await entity.stat();
+            files.add(LocalFileItem(
+              path: entity.path,
+              name: name,
+              size: stat.size,
+              isDirectory: false,
+            ));
+          }
+        } else if (entity is Directory) {
+          final name = entity.path.split(Platform.pathSeparator).last;
+          files.add(LocalFileItem(
+            path: entity.path,
+            name: name,
+            size: 0,
+            isDirectory: true,
+          ));
+        }
+      }
+
+      // 排序：目录在前，文件在后，按名称排序
+      files.sort((a, b) {
+        if (a.isDirectory && !b.isDirectory) return -1;
+        if (!a.isDirectory && b.isDirectory) return 1;
+        return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+      });
+
+      _localFiles = files;
+    } catch (e) {
+      _error = '加载文件失败: $e';
+      _localFiles = [];
+    }
+
+    _isLoadingLocalFiles = false;
+    notifyListeners();
+  }
+
+  /// 进入子目录
+  Future<void> enterLocalDirectory(String path) async {
+    _localDirectory = path;
+    await loadLocalFiles();
+  }
+
+  /// 返回上级目录
+  Future<void> goUpLocalDirectory() async {
+    if (_localDirectory == null) return;
+    
+    final parent = Directory(_localDirectory!).parent;
+    _localDirectory = parent.path;
+    await loadLocalFiles();
+  }
+
+  /// 清除已选目录
+  void clearLocalDirectory() {
+    _localDirectory = null;
+    _localFiles = [];
+    notifyListeners();
+  }
+
   @override
   void dispose() {
     _deviceSubscription?.cancel();
@@ -651,4 +755,29 @@ class CastProvider extends ChangeNotifier {
     _mediaServer.dispose();
     super.dispose();
   }
+}
+
+/// 本地文件项
+class LocalFileItem {
+  final String path;
+  final String name;
+  final int size;
+  final bool isDirectory;
+
+  LocalFileItem({
+    required this.path,
+    required this.name,
+    required this.size,
+    required this.isDirectory,
+  });
+
+  String get sizeDisplay {
+    if (isDirectory) return '';
+    if (size < 1024) return '$size B';
+    if (size < 1024 * 1024) return '${(size / 1024).toStringAsFixed(1)} KB';
+    if (size < 1024 * 1024 * 1024) return '${(size / (1024 * 1024)).toStringAsFixed(1)} MB';
+    return '${(size / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
+  }
+
+  String get extension => name.split('.').last.toLowerCase();
 }

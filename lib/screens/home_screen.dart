@@ -5,6 +5,7 @@ import 'package:file_picker/file_picker.dart';
 import '../providers/cast_provider.dart';
 import '../widgets/device_list.dart';
 import '../widgets/media_browser.dart';
+import '../widgets/local_media_browser.dart';
 import '../widgets/playback_control.dart';
 import '../widgets/url_cast_dialog.dart';
 import '../services/local_network_permission.dart';
@@ -23,7 +24,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
+    _tabController = TabController(length: 3, vsync: this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _initializeAndScan();
     });
@@ -67,6 +68,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           controller: _tabController,
           tabs: const [
             Tab(icon: Icon(Icons.devices), text: '设备'),
+            Tab(icon: Icon(Icons.video_library), text: '本地'),
             Tab(icon: Icon(Icons.folder), text: '浏览'),
           ],
         ),
@@ -134,6 +136,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
               controller: _tabController,
               children: const [
                 DeviceListWidget(),
+                LocalMediaBrowserWidget(),
                 MediaBrowserWidget(),
               ],
             ),
