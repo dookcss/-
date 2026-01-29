@@ -122,9 +122,9 @@ class SSDPService {
           timer.cancel();
           _log('INFO', 'SSDP搜索完成，发现 ${_discoveredLocations.length} 个设备位置');
           
-          // iOS: SSDP广播可能无效，启动子网扫描
-          if (Platform.isIOS && _discoveredLocations.isEmpty) {
-            _log('INFO', 'iOS: 未发现设备，启动子网扫描...');
+          // iOS: 因为某些设备不响应SSDP广播，始终启动子网扫描寻找投屏设备
+          if (Platform.isIOS) {
+            _log('INFO', 'iOS: 启动子网扫描寻找投屏设备...');
             await _scanSubnet();
           }
         }
