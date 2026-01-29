@@ -62,7 +62,7 @@ class SSDPService {
   void _log(String level, String message) {
     final entry = SSDPLogEntry(level, message);
     _logs.add(entry);
-    if (_logs.length > 200) {
+    if (_logs.length > 2000) {
       _logs.removeAt(0);
     }
     _logController.add(entry);
