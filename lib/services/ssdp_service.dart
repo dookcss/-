@@ -51,6 +51,12 @@ class SSDPService {
   String? _localIp;
   String? _subnetBroadcast;
 
+  // 持续扫描相关
+  Timer? _continuousScanTimer;
+  bool _isContinuousScanEnabled = false;
+  int _scanIntervalSeconds = 30;
+  DateTime? _lastProbedIPsClearTime;
+
   // Debug logging
   final List<SSDPLogEntry> _logs = [];
   final StreamController<SSDPLogEntry> _logController =
@@ -928,8 +934,113 @@ class SSDPService {
     _socket = null;
   }
 
+  // ==================== 持续扫描功能 ====================
+
+  /// 是否正在进行持续扫描
+  bool get isContinuousScanEnabled => _isContinuousScanEnabled;
+
+  /// 启动持续子网扫描
+  /// [intervalSeconds] 扫描间隔（秒），默认30秒
+  void startContinuousScan({int intervalSeconds = 30}) {
+    if (_isContinuousScanEnabled) {
+      _log('WARN', '持续扫描已在运行中');
+      return;
+    }
+
+    _scanIntervalSeconds = intervalSeconds;
+    _isContinuousScanEnabled = true;
+    _log('INFO', '启动持续子网扫描，间隔 ${_scanIntervalSeconds} 秒');
+
+    // 立即执行一次扫描
+    _performContinuousScan();
+
+    // 启动定时器
+    _continuousScanTimer = Timer.periodic(
+      Duration(seconds: _scanIntervalSeconds),
+      (_) => _performContinuousScan(),
+    );
+  }
+
+  /// 停止持续扫描
+  void stopContinuousScan() {
+    if (!_isContinuousScanEnabled) return;
+
+    _continuousScanTimer?.cancel();
+    _continuousScanTimer = null;
+    _isContinuousScanEnabled = false;
+    _log('INFO', '已停止持续子网扫描');
+  }
+
+  /// 执行一次持续扫描
+  Future<void> _performContinuousScan() async {
+    if (!_isContinuousScanEnabled) return;
+
+    // 每5分钟清理一次已探测IP列表，允许重新发现离线后重新上线的设备
+    final now = DateTime.now();
+    if (_lastProbedIPsClearTime == null ||
+        now.difference(_lastProbedIPsClearTime!).inMinutes >= 5) {
+      _log('DEBUG', '清理已探测IP列表，允许重新发现设备');
+      _probedIPs.clear();
+      _lastProbedIPsClearTime = now;
+    }
+
+    _log('DEBUG', '执行持续子网扫描...');
+    await _scanSubnetContinuous();
+  }
+
+  /// 持续扫描专用的子网扫描方法（更轻量）
+  Future<void> _scanSubnetContinuous() async {
+    if (_localIp == null) {
+      await _getNetworkInfo();
+    }
+    if (_localIp == null) {
+      _log('WARN', '持续扫描: 无法获取本地IP');
+      return;
+    }
+
+    final parts = _localIp!.split('.');
+    if (parts.length != 4) return;
+
+    final subnet = '${parts[0]}.${parts[1]}.${parts[2]}';
+    int scannedCount = 0;
+    int foundCount = 0;
+
+    // 扫描常见设备IP范围
+    for (int i = 2; i <= 254; i++) {
+      if (!_isContinuousScanEnabled) break; // 检查是否已停止
+
+      final ip = '$subnet.$i';
+
+      // 跳过本机IP、网关和已探测的IP
+      if (ip == _localIp || i == 1 || _probedIPs.contains(ip)) continue;
+
+      scannedCount++;
+
+      // 快速TCP连接测试
+      final hasDevice = await _quickTcpProbe(ip, 49152);
+      if (hasDevice) {
+        _log('INFO', '持续扫描: 发现潜在设备 $ip');
+        foundCount++;
+        _probedIPs.add(ip);
+        await _probeDeviceByHTTP(ip);
+      }
+
+      // 限制扫描速度，避免网络拥塞
+      if (scannedCount % 20 == 0) {
+        await Future.delayed(const Duration(milliseconds: 50));
+      }
+    }
+
+    if (foundCount > 0) {
+      _log('INFO', '持续扫描完成: 扫描 $scannedCount 个IP，发现 $foundCount 个新设备');
+    } else {
+      _log('DEBUG', '持续扫描完成: 扫描 $scannedCount 个IP，无新设备');
+    }
+  }
+
   void dispose() {
     stopDiscovery();
+    stopContinuousScan();
     _deviceController.close();
     _logController.close();
   }

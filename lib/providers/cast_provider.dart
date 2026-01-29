@@ -72,6 +72,7 @@ class CastProvider extends ChangeNotifier {
   bool get isPlaying => _playbackState == PlaybackState.playing;
   bool get autoSelectRenderer => _autoSelectRenderer;
   bool get isManualDiscovering => _isManualDiscovering;
+  bool get isContinuousScanEnabled => _ssdpService.isContinuousScanEnabled;
 
   // Content browsing getters
   List<DIDLContent> get currentContents => List.unmodifiable(_currentContents);
@@ -195,6 +196,8 @@ class CastProvider extends ChangeNotifier {
 
     Future.delayed(const Duration(seconds: 10), () {
       stopScan();
+      // 扫描完成后自动启动持续扫描
+      startContinuousScan();
     });
   }
 
@@ -217,6 +220,41 @@ class CastProvider extends ChangeNotifier {
     _deviceSubscription?.cancel();
     _ssdpService.stopDiscovery();
     notifyListeners();
+  }
+
+  // ==================== 持续扫描控制 ====================
+
+  /// 启动持续子网扫描
+  void startContinuousScan({int intervalSeconds = 30}) {
+    // 确保设备流订阅活跃
+    _deviceSubscription?.cancel();
+    _deviceSubscription = _ssdpService.deviceStream.listen((device) {
+      if (!_devices.any((d) => d.usn == device.usn)) {
+        _devices.add(device);
+        if (_autoSelectRenderer && _selectedRenderer == null && device.canPlayMedia) {
+          _selectedRenderer = device;
+        }
+        notifyListeners();
+      }
+    });
+
+    _ssdpService.startContinuousScan(intervalSeconds: intervalSeconds);
+    notifyListeners();
+  }
+
+  /// 停止持续扫描
+  void stopContinuousScan() {
+    _ssdpService.stopContinuousScan();
+    notifyListeners();
+  }
+
+  /// 切换持续扫描状态
+  void toggleContinuousScan() {
+    if (isContinuousScanEnabled) {
+      stopContinuousScan();
+    } else {
+      startContinuousScan();
+    }
   }
 
   /// Manual device discovery by URL
@@ -751,6 +789,7 @@ class CastProvider extends ChangeNotifier {
   void dispose() {
     _deviceSubscription?.cancel();
     _positionTimer?.cancel();
+    _ssdpService.stopContinuousScan();
     _ssdpService.dispose();
     _mediaServer.dispose();
     super.dispose();

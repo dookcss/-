@@ -613,7 +613,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ListTile(
                 leading: const Icon(Icons.info_outline),
                 title: const Text('版本'),
-                subtitle: const Text('1.0.7'),
+                subtitle: const Text('1.0.8'),
               ),
               ListTile(
                 leading: const Icon(Icons.phone_iphone),
