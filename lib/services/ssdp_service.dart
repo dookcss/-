@@ -97,8 +97,9 @@ class SSDPService {
             final datagram = _socket!.receive();
             if (datagram != null) {
               final response = String.fromCharCodes(datagram.data);
-              _log('DEBUG', '收到UDP响应 from ${datagram.address.address}:${datagram.port}');
-              _handleSSDPResponse(response);
+              final sourceIp = datagram.address.address;
+              _log('DEBUG', '收到UDP响应 from $sourceIp:${datagram.port}');
+              _handleSSDPResponse(response, sourceIp);
             }
           }
         },
@@ -325,39 +326,57 @@ class SSDPService {
   }
 
   /// Handle SSDP response - extract LOCATION header and fetch device description
-  void _handleSSDPResponse(String response) async {
-    // Check if it's a valid response
-    if (!response.contains('HTTP/1.1 200') &&
-        !response.toUpperCase().contains('NOTIFY')) {
+  /// [sourceIp] is the IP address that sent the response
+  final Set<String> _probedIPs = {}; // 已探测过的IP，避免重复
+  
+  void _handleSSDPResponse(String response, String sourceIp) async {
+    // 调试：打印响应前150字符
+    final preview = response.length > 150 ? response.substring(0, 150) : response;
+    _log('DEBUG', 'SSDP响应内容: ${preview.replaceAll('\r\n', ' | ')}');
+    
+    // 放宽验证：接受任何包含HTTP响应或NOTIFY的内容
+    final upperResponse = response.toUpperCase();
+    final isValidResponse = upperResponse.contains('HTTP/') || 
+                           upperResponse.contains('NOTIFY') ||
+                           upperResponse.contains('LOCATION');
+    
+    if (!isValidResponse) {
+      _log('DEBUG', '响应格式无效，跳过');
       return;
     }
 
     final headers = _parseHeaders(response);
     final location = headers['location'];
 
-    if (location == null || location.isEmpty) {
-      _log('WARN', 'SSDP响应缺少LOCATION头');
-      return;
-    }
-
-    if (_discoveredLocations.contains(location)) {
-      return; // Already processed
-    }
-
-    _discoveredLocations.add(location);
-    _log('INFO', 'SSDP发现设备URL: $location');
-
-    // Fetch device description from the LOCATION URL
-    try {
-      final devices = await _fetchDeviceDescription(location);
-      for (final device in devices) {
-        if (device.canPlayMedia || device.canBrowseMedia) {
-          _log('INFO', '添加设备: ${device.friendlyName} (${device.typeLabel})');
-          _deviceController.add(device);
-        }
+    if (location != null && location.isNotEmpty) {
+      // 标准处理：有LOCATION头
+      if (_discoveredLocations.contains(location)) {
+        return; // Already processed
       }
-    } catch (e) {
-      _log('ERROR', '获取设备描述失败: $e');
+
+      _discoveredLocations.add(location);
+      _log('INFO', 'SSDP发现设备URL: $location');
+
+      // Fetch device description from the LOCATION URL
+      try {
+        final devices = await _fetchDeviceDescription(location);
+        for (final device in devices) {
+          if (device.canPlayMedia || device.canBrowseMedia) {
+            _log('INFO', '添加设备: ${device.friendlyName} (${device.typeLabel})');
+            _deviceController.add(device);
+          }
+        }
+      } catch (e) {
+        _log('ERROR', '获取设备描述失败: $e');
+      }
+    } else {
+      // iOS特殊处理：没有LOCATION头，直接探测源IP
+      if (Platform.isIOS && !_probedIPs.contains(sourceIp)) {
+        _probedIPs.add(sourceIp);
+        _log('INFO', 'iOS: 响应无LOCATION头，尝试直接探测 $sourceIp');
+        // 异步探测，不阻塞
+        _probeDeviceByHTTP(sourceIp);
+      }
     }
   }
 
@@ -504,8 +523,9 @@ class SSDPService {
           final datagram = socket.receive();
           if (datagram != null) {
             final response = String.fromCharCodes(datagram.data);
-            _log('DEBUG', '探测响应 from ${datagram.address.address}');
-            _handleSSDPResponse(response);
+            final sourceIp = datagram.address.address;
+            _log('DEBUG', '探测响应 from $sourceIp');
+            _handleSSDPResponse(response, sourceIp);
           }
         }
       });
