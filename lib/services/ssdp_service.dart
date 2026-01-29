@@ -79,6 +79,7 @@ class SSDPService {
   Future<void> startDiscovery() async {
     await stopDiscovery();
     _discoveredLocations.clear();
+    _probedIPs.clear();
     _log('INFO', '开始SSDP设备发现...');
 
     try {
@@ -120,6 +121,12 @@ class SSDPService {
         } else {
           timer.cancel();
           _log('INFO', 'SSDP搜索完成，发现 ${_discoveredLocations.length} 个设备位置');
+          
+          // iOS: SSDP广播可能无效，启动子网扫描
+          if (Platform.isIOS && _discoveredLocations.isEmpty) {
+            _log('INFO', 'iOS: 未发现设备，启动子网扫描...');
+            await _scanSubnet();
+          }
         }
       });
 
@@ -760,6 +767,82 @@ class SSDPService {
     _log('INFO', 'iOS: HTTP探测 $ip 完成，尝试 $attemptCount 个URL，$errorCount 个失败');
   }
 
+  /// iOS专用：扫描子网内的设备
+  /// 由于某些设备不响应SSDP广播，需要主动扫描
+  Future<void> _scanSubnet() async {
+    if (_localIp == null) {
+      _log('WARN', 'iOS: 无法获取本地IP，跳过子网扫描');
+      return;
+    }
+
+    final parts = _localIp!.split('.');
+    if (parts.length != 4) return;
+
+    final subnet = '${parts[0]}.${parts[1]}.${parts[2]}';
+    _log('INFO', 'iOS: 开始扫描子网 $subnet.x');
+
+    // 常见的DLNA设备IP段（机顶盒、智能电视通常在这些范围）
+    // 优先扫描常见的设备IP：100-200 范围
+    final priorityRanges = [
+      [100, 200], // 常见DHCP分配范围
+      [2, 50],    // 静态IP常见范围
+      [200, 254], // 其他设备
+    ];
+
+    int scannedCount = 0;
+    int foundCount = 0;
+
+    for (final range in priorityRanges) {
+      for (int i = range[0]; i <= range[1]; i++) {
+        final ip = '$subnet.$i';
+        
+        // 跳过本机IP和已探测的IP
+        if (ip == _localIp || _probedIPs.contains(ip)) continue;
+        
+        // 跳过网关（通常是.1）
+        if (i == 1) continue;
+        
+        scannedCount++;
+        
+        // 快速TCP连接测试
+        final hasDevice = await _quickTcpProbe(ip, 49152);
+        if (hasDevice) {
+          _log('INFO', 'iOS: 发现潜在设备 $ip');
+          foundCount++;
+          _probedIPs.add(ip);
+          await _probeDeviceByHTTP(ip);
+        }
+        
+        // 每扫描50个IP输出一次进度
+        if (scannedCount % 50 == 0) {
+          _log('DEBUG', 'iOS: 已扫描 $scannedCount 个IP，发现 $foundCount 个潜在设备');
+        }
+        
+        // 如果已经找到足够多的设备，可以提前结束
+        if (foundCount >= 5) {
+          _log('INFO', 'iOS: 已找到 $foundCount 个设备，停止扫描');
+          return;
+        }
+      }
+    }
+
+    _log('INFO', 'iOS: 子网扫描完成，共扫描 $scannedCount 个IP，发现 $foundCount 个潜在设备');
+  }
+
+  /// 快速TCP端口探测
+  Future<bool> _quickTcpProbe(String ip, int port) async {
+    try {
+      final socket = await Socket.connect(
+        ip,
+        port,
+        timeout: const Duration(milliseconds: 200), // 非常短的超时
+      );
+      socket.destroy();
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
 
   DLNADevice? _parseDevice(XmlElement device, String location, String baseUrl) {
     final deviceType = device.findElements('deviceType').firstOrNull?.innerText ?? '';
