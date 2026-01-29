@@ -841,7 +841,7 @@ class SSDPService {
       final socket = await Socket.connect(
         ip,
         port,
-        timeout: const Duration(milliseconds: 200), // 非常短的超时
+        timeout: const Duration(milliseconds: 500), // 增加超时时间
       );
       socket.destroy();
       return true;
